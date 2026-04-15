@@ -83,7 +83,7 @@ The repo includes a simple production-oriented compose file:
 ```yaml
 services:
   stopliga:
-    image: bluepr0/stopliga:latest
+    image: ghcr.io/jcastro/stopliga:latest
     container_name: stopliga
     restart: unless-stopped
     env_file:
@@ -105,7 +105,7 @@ docker run -d \
   --env-file .env \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/secrets:/run/secrets:ro" \
-  bluepr0/stopliga:latest --loop
+  ghcr.io/jcastro/stopliga:latest --loop
 ```
 
 ## Useful Logs
@@ -161,6 +161,4 @@ STOPLIGA_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram_bot_token
 ## Image
 
 - `ghcr.io/jcastro/stopliga:latest`
-- `ghcr.io/jcastro/stopliga:0.1.6`
-- `bluepr0/stopliga:latest`
-- `bluepr0/stopliga:0.1.6`
+- `ghcr.io/jcastro/stopliga:0.1.7`

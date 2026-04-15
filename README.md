@@ -150,6 +150,15 @@ STOPLIGA_RUN_MODE=loop
 docker build -t stopliga .
 ```
 
+### Publicar en Docker Hub
+
+La release automática usa [publish-docker.yml](/Users/jonatan/Code/stopliga/.github/workflows/publish-docker.yml:1) y se dispara al hacer push de una tag `v*`.
+
+Secrets requeridos en GitHub:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+
 ### One-shot
 
 ```bash
@@ -172,25 +181,39 @@ docker run -d \
 
 ## Docker Compose
 
-El proyecto incluye [docker-compose.yml](/Users/jonatan/Nextcloud/AI/Claude/Apps/StopLiga/docker-compose.yml:1).
+El proyecto incluye [docker-compose.yml](/Users/jonatan/Code/stopliga/docker-compose.yml:1).
 
 ```bash
 cp .env.example .env
 mkdir -p secrets
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 Si quieres evitar secretos en variables de entorno:
 
 ```bash
 printf '%s\n' 'replace-me' > secrets/unifi_api_key
+printf '%s\n' 'admin' > secrets/unifi_username
 printf '%s\n' 'change-me' > secrets/unifi_password
-chmod 600 secrets/unifi_api_key secrets/unifi_password
+chmod 600 secrets/unifi_api_key secrets/unifi_username secrets/unifi_password
 ```
 
-Y en `.env` deja solo `UNIFI_HOST` y, si aplica, `UNIFI_USERNAME`.
+Y en `.env` deja solo `UNIFI_HOST` y referencia los ficheros:
 
-El `docker-compose.yml` del repo ya viene preparado para Linux con `STOPLIGA_UID=1000` y `STOPLIGA_GID=1000` por defecto. Si tu host usa otro UID/GID, cámbialos en `.env`.
+```dotenv
+UNIFI_API_KEY_FILE=/run/secrets/unifi_api_key
+# o, si usas login local:
+# UNIFI_USERNAME_FILE=/run/secrets/unifi_username
+# UNIFI_PASSWORD_FILE=/run/secrets/unifi_password
+```
+
+El `docker-compose.yml` del repo está simplificado para producción normal:
+
+- imagen `bluepr0/stopliga:latest`
+- `uid/gid 1000`
+- volumen `./data:/data`
+- secretos en `./secrets:/run/secrets:ro`
 
 Prueba puntual:
 

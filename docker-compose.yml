@@ -1,18 +1,14 @@
 services:
   stopliga:
-    build: .
-    image: stopliga:local
+    image: bluepr0/stopliga:latest
     container_name: stopliga
     init: true
     restart: unless-stopped
     env_file:
-      - path: .env
-        required: false
+      - .env
     environment:
-      STOPLIGA_UID: ${STOPLIGA_UID:-1000}
-      STOPLIGA_GID: ${STOPLIGA_GID:-1000}
-      UNIFI_API_KEY_FILE: /run/secrets/unifi_api_key
-      UNIFI_PASSWORD_FILE: /run/secrets/unifi_password
+      STOPLIGA_UID: 1000
+      STOPLIGA_GID: 1000
     command: ["--loop"]
     volumes:
       - ./data:/data

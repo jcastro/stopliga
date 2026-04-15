@@ -97,13 +97,12 @@ class StopLigaService:
             source = f"vpn:{self.config.vpn_name}"
         else:
             vpn_network = client.pick_default_vpn_network()
-            target_device = client.pick_default_target_device()
             payload = build_direct_bootstrap_payload(
                 route_name_value=self.config.route_name,
                 desired_ips=desired_ips,
                 desired_enabled=False,
                 vpn_network_id=str(vpn_network.get("_id")),
-                target_devices=[target_device],
+                target_devices=[],
             )
             source = "auto-bootstrap"
         return (
@@ -165,6 +164,95 @@ class StopLigaService:
             try:
                 bootstrap_backend.create_route(preview.payload)
             except StopLigaError as exc:
+                if preview.source == "auto-bootstrap" and not preview.payload.get("target_devices"):
+                    target_device = client.pick_default_target_device()
+                    fallback_payload = dict(preview.payload)
+                    fallback_payload["target_devices"] = [target_device]
+                    log_event(
+                        self.logger,
+                        logging.WARNING,
+                        "route_bootstrap_retry",
+                        backend=preview.backend_name,
+                        source="auto-bootstrap-device-fallback",
+                        reason="empty_target_devices_rejected",
+                    )
+                    try:
+                        bootstrap_backend.create_route(fallback_payload)
+                    except StopLigaError:
+                        pass
+                    else:
+                        created = True
+                        bootstrap_source = "auto-bootstrap-device-fallback"
+                        bootstrap_network_id = str(fallback_payload.get("network_id") or "") or None
+                        bootstrap_target_macs = self._route_target_macs(fallback_payload)
+                        backend, endpoint, route_record = choose_existing_route_backend(client, site_context, self.config.route_name)
+                        desired_enabled = feed_snapshot.desired_enabled
+                        if bootstrap_source == "auto-bootstrap" or self._is_pending_auto_bootstrap(route_record, previous_state):
+                            if desired_enabled:
+                                log_event(
+                                    self.logger,
+                                    logging.WARNING,
+                                    "route_incomplete",
+                                    route=self.config.route_name,
+                                    reason="auto_bootstrap_pending_manual_review",
+                                )
+                            desired_enabled = False
+                            if not bootstrap_source:
+                                bootstrap_source = "auto-bootstrap"
+                                bootstrap_network_id = str(route_record.get("network_id") or "") or None
+                                bootstrap_target_macs = self._route_target_macs(route_record)
+                        try:
+                            plan = backend.build_plan(endpoint, route_record, feed_snapshot.destinations, desired_enabled)
+                        except UnsupportedRouteShapeError:
+                            if self.config.dump_payloads_on_error:
+                                log_unsupported_shape(self.logger, route_record)
+                            raise
+
+                        summary = summarize_plan(plan, feed_snapshot)
+                        log_event(self.logger, logging.INFO, "route_plan", mode="local", summary=summary)
+                        if self.config.dry_run:
+                            return SyncResult(
+                                mode="local",
+                                route_name=self.config.route_name,
+                                route_id=plan.route_id,
+                                backend_name=plan.backend_name,
+                                changed=created or plan.has_changes,
+                                created=created,
+                                dry_run=True,
+                                desired_enabled=plan.desired_enabled,
+                                current_enabled=plan.current_enabled,
+                                desired_destinations=len(plan.desired_destinations),
+                                current_destinations=len(plan.current_destinations),
+                                invalid_entries=feed_snapshot.invalid_count,
+                                feed_hash=feed_snapshot.feed_hash,
+                                destinations_hash=feed_snapshot.destinations_hash,
+                                summary=summary,
+                                bootstrap_source=bootstrap_source,
+                                bootstrap_network_id=bootstrap_network_id,
+                                bootstrap_target_macs=bootstrap_target_macs,
+                            )
+                        if plan.has_changes:
+                            apply_plan(client, backend, plan)
+                        return SyncResult(
+                            mode="local",
+                            route_name=self.config.route_name,
+                            route_id=plan.route_id,
+                            backend_name=plan.backend_name,
+                            changed=created or plan.has_changes,
+                            created=created,
+                            dry_run=False,
+                            desired_enabled=plan.desired_enabled,
+                            current_enabled=plan.current_enabled,
+                            desired_destinations=len(plan.desired_destinations),
+                            current_destinations=len(plan.current_destinations),
+                            invalid_entries=feed_snapshot.invalid_count,
+                            feed_hash=feed_snapshot.feed_hash,
+                            destinations_hash=feed_snapshot.destinations_hash,
+                            summary=summary,
+                            bootstrap_source=bootstrap_source,
+                            bootstrap_network_id=bootstrap_network_id,
+                            bootstrap_target_macs=bootstrap_target_macs,
+                        )
                 raise RouteNotFoundError(
                     f"Route {self.config.route_name!r} not found and bootstrap via {preview.source} failed: {exc}"
                 ) from exc

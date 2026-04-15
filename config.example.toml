@@ -22,6 +22,7 @@ verify_tls = true
 [unifi]
 host = "192.168.1.1"
 port = 443
+# api_key = "replace-me"
 username = "admin"
 password = "change-me"
 site = "default"

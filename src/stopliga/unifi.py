@@ -368,6 +368,8 @@ class UniFiClient:
 
         body_bytes = None
         headers = {"Accept": "application/json"}
+        if self.config.api_key:
+            headers["X-API-Key"] = self.config.api_key
         if json_body is not None:
             body_bytes = json.dumps(json_body).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -452,6 +454,11 @@ class UniFiClient:
 
     def login(self, force: bool = False) -> None:
         """Authenticate to UniFi."""
+
+        if self.config.api_key:
+            self.logged_in = True
+            self.login_path = None
+            return
 
         if self.logged_in and not force:
             return

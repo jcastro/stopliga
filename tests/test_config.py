@@ -54,6 +54,21 @@ site = "default"
         config = load_config(args, {}, validate=False)
         self.assertEqual(config.run_mode, "once")
 
+    def test_api_key_can_replace_username_and_password(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+            },
+        )
+        self.assertEqual(config.host, "10.0.0.2")
+        self.assertEqual(config.api_key, "test-api-key")
+        self.assertIsNone(config.username)
+        self.assertIsNone(config.password)
+
     def test_partial_bootstrap_configuration_is_rejected(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])

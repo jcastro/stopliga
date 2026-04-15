@@ -96,6 +96,7 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "run_mode": app.get("run_mode"),
         "host": unifi.get("host"),
         "port": unifi.get("port"),
+        "api_key": unifi.get("api_key"),
         "username": unifi.get("username"),
         "password": unifi.get("password"),
         "site": unifi.get("site"),
@@ -135,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--healthcheck", action="store_true", help="Validate recent state file freshness")
     parser.add_argument("--host", default=None, help="UniFi console host or IP for local mode")
     parser.add_argument("--port", type=int, default=None, help="UniFi HTTPS port for local mode")
+    parser.add_argument("--api-key", default=None, help="UniFi local API key")
     parser.add_argument("--username", default=None, help="UniFi local username")
     parser.add_argument("--password", default=None, help="UniFi local password")
     parser.add_argument("--site", default=None, help="UniFi site name or identifier")
@@ -231,6 +233,7 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         run_mode=_normalize_run_mode(args, env, file_cfg),
         host=_first(args.host, _env_value(env, "UNIFI_HOST"), file_cfg.get("host"), DEFAULTS.host),
         port=_parse_int(_first(args.port, _env_value(env, "UNIFI_PORT"), file_cfg.get("port"), DEFAULTS.port), field_name="port"),
+        api_key=_first(args.api_key, _env_value(env, "UNIFI_API_KEY"), file_cfg.get("api_key"), DEFAULTS.api_key),
         username=_first(args.username, _env_value(env, "UNIFI_USERNAME"), file_cfg.get("username"), DEFAULTS.username),
         password=_first(args.password, _env_value(env, "UNIFI_PASSWORD"), file_cfg.get("password"), DEFAULTS.password),
         site=str(_first(args.site, _env_value(env, "UNIFI_SITE"), file_cfg.get("site"), DEFAULTS.site)),
@@ -315,5 +318,5 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
     if bool(config.vpn_name) != bool(config.target_clients):
         raise ConfigError("Automatic route creation requires both STOPLIGA_VPN_NAME and STOPLIGA_TARGETS")
     if validate_connection:
-        if not config.has_local_credentials():
-            raise ConfigError("local mode requires UNIFI_HOST, UNIFI_USERNAME and UNIFI_PASSWORD")
+        if not config.has_unifi_auth():
+            raise ConfigError("local mode requires UNIFI_HOST and either UNIFI_API_KEY or UNIFI_USERNAME/UNIFI_PASSWORD")

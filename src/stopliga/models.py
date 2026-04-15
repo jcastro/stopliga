@@ -16,6 +16,7 @@ class Config:
     run_mode: RunMode = "once"
     host: str | None = None
     port: int = 443
+    api_key: str | None = None
     username: str | None = None
     password: str | None = None
     site: str = "default"
@@ -46,8 +47,8 @@ class Config:
     target_clients: tuple[str, ...] = ()
     dump_payloads_on_error: bool = False
 
-    def has_local_credentials(self) -> bool:
-        return bool(self.host and self.username and self.password)
+    def has_unifi_auth(self) -> bool:
+        return bool(self.host and ((self.api_key and self.api_key.strip()) or (self.username and self.password)))
 
     def resolved_health_max_age(self) -> int:
         if self.health_max_age_seconds is not None and self.health_max_age_seconds > 0:

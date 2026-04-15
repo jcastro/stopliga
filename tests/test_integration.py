@@ -371,7 +371,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                 ["192.0.2.10", "198.51.100.0/24"],
             )
 
-    def test_create_route_from_first_available_vpn_and_device(self) -> None:
+    def test_create_route_from_first_available_vpn_with_any_source(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": True},
             ip_lines=["192.0.2.10", "198.51.100.0/24"],
@@ -398,7 +398,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertEqual(state.route["description"], "LaLiga")
             self.assertFalse(state.route["enabled"])
             self.assertEqual(state.route["network_id"], "vpn-network-1")
-            self.assertEqual(state.route["target_devices"], [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}])
+            self.assertEqual(state.route["target_devices"], [])
             self.assertEqual(
                 [item["ip_or_subnet"] for item in state.route["ip_addresses"]],
                 ["192.0.2.10", "198.51.100.0/24"],

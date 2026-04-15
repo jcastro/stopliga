@@ -2,23 +2,15 @@ services:
   stopliga:
     image: bluepr0/stopliga:latest
     container_name: stopliga
-    init: true
     restart: unless-stopped
     env_file:
       - .env
-    environment:
-      STOPLIGA_UID: 1000
-      STOPLIGA_GID: 1000
     command: ["--loop"]
     volumes:
-      - ./data:/data
+      - stopliga_data:/data
       - ./secrets:/run/secrets:ro
-    read_only: true
-    tmpfs:
-      - /tmp
     healthcheck:
       disable: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
+
+volumes:
+  stopliga_data:

@@ -206,6 +206,39 @@ class StopLigaService:
             bootstrap_target_macs=bootstrap_target_macs,
         )
 
+    def _log_plan_details(self, *, plan, pending_manual_review: bool) -> None:
+        added = [ip for ip in plan.desired_destinations if ip not in plan.current_destinations]
+        removed = [ip for ip in plan.current_destinations if ip not in plan.desired_destinations]
+
+        log_event(
+            self.logger,
+            logging.INFO,
+            "route_check",
+            backend=plan.backend_name,
+            route=plan.route_label,
+            route_id=plan.route_id,
+            pending_manual_review=pending_manual_review,
+            current_enabled=plan.current_enabled,
+            desired_enabled=plan.desired_enabled,
+            current_destinations=len(plan.current_destinations),
+            desired_destinations=len(plan.desired_destinations),
+            route_changed_fields=",".join(plan.route_changed_fields) if plan.route_changed_fields else "",
+            linked_list_changed_fields=",".join(plan.linked_list_changed_fields) if plan.linked_list_changed_fields else "",
+        )
+
+        if added or removed:
+            log_event(
+                self.logger,
+                logging.INFO,
+                "route_ip_delta",
+                route=plan.route_label,
+                route_id=plan.route_id,
+                added_count=len(added),
+                removed_count=len(removed),
+                added_sample=",".join(added[:5]),
+                removed_sample=",".join(removed[:5]),
+            )
+
     def _plan_route_update(
         self,
         *,
@@ -221,7 +254,8 @@ class StopLigaService:
         client: UniFiClient,
     ) -> SyncResult:
         desired_enabled = feed_snapshot.desired_enabled
-        if self._bootstrap_requires_manual_review(bootstrap_source) or self._is_pending_auto_bootstrap(route_record, previous_state):
+        pending_manual_review = self._bootstrap_requires_manual_review(bootstrap_source) or self._is_pending_auto_bootstrap(route_record, previous_state)
+        if pending_manual_review:
             if desired_enabled:
                 log_event(
                     self.logger,
@@ -251,6 +285,7 @@ class StopLigaService:
             bootstrap_network_id=bootstrap_network_id,
             bootstrap_target_macs=bootstrap_target_macs,
         )
+        self._log_plan_details(plan=plan, pending_manual_review=pending_manual_review)
         log_event(self.logger, logging.INFO, "route_plan", mode="local", summary=result.summary)
         if not self.config.dry_run and plan.has_changes:
             apply_plan(client, backend, plan)

@@ -240,6 +240,14 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
 
     logger = logging.getLogger("stopliga.feed")
     status_url, ip_list_url, source_revision = _resolve_consistent_feed_urls(config)
+    log_event(
+        logger,
+        logging.INFO,
+        "feed_check",
+        status_url=_safe_log_url(status_url),
+        ip_list_url=_safe_log_url(ip_list_url),
+        strict_consistency=config.strict_feed_consistency,
+    )
     if source_revision:
         log_event(logger, logging.INFO, "feed_revision_resolved", revision=source_revision)
     elif config.status_url != status_url or config.ip_list_url != ip_list_url:

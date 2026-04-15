@@ -32,26 +32,43 @@ def _post_json(url: str, payload: dict[str, Any], *, timeout: float) -> None:
         raise NetworkError(f"Notification request failed for {url}: {exc}") from exc
 
 
+def _blocked_label(is_blocked: bool) -> str:
+    return "ACTIVE" if is_blocked else "INACTIVE"
+
+
 def build_notification_message(result: SyncResult, previous_state: dict[str, object]) -> str | None:
-    lines: list[str] = []
+    changes: list[str] = []
 
     previous_blocked = previous_state.get("last_is_blocked")
     if isinstance(previous_blocked, bool) and previous_blocked != result.is_blocked:
-        lines.append(f"Block status changed: {'active' if result.is_blocked else 'inactive'}")
+        changes.append(
+            f"- 🚦 Block status: {_blocked_label(previous_blocked)} -> {_blocked_label(result.is_blocked)}"
+        )
 
     if result.added_destinations or result.removed_destinations:
-        parts = []
+        parts: list[str] = []
         if result.added_destinations:
-            parts.append(f"+{result.added_destinations}")
+            parts.append(f"+{result.added_destinations} added")
         if result.removed_destinations:
-            parts.append(f"-{result.removed_destinations}")
-        lines.append(f"IP list updated ({', '.join(parts)})")
+            parts.append(f"-{result.removed_destinations} removed")
+        changes.append(f"- 🌐 IP list: {', '.join(parts)}")
 
-    if not lines:
+    if not changes:
         return None
 
-    header = f"StopLiga route {result.route_name}"
-    return header + "\n" + "\n".join(f"- {line}" for line in lines)
+    return "\n".join(
+        [
+            "🛡️ StopLiga",
+            f"📍 Route: {result.route_name}",
+            "",
+            "Changes detected:",
+            *changes,
+            "",
+            "Current state:",
+            f"- {'🔴' if result.is_blocked else '🟢'} Blocking: {_blocked_label(result.is_blocked)}",
+            f"- 📦 Desired destinations: {result.desired_destinations}",
+        ]
+    )
 
 
 def send_notifications(config: Config, result: SyncResult, previous_state: dict[str, object]) -> None:

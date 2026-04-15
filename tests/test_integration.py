@@ -851,8 +851,10 @@ class ServiceIntegrationTests(unittest.TestCase):
             )
             StopLigaService(config).run_once()
             self.assertEqual(len(state.gotify_messages), 1)
-            self.assertIn("Block status changed: active", state.gotify_messages[0]["message"])
-            self.assertIn("IP list updated (+2, -1)", state.gotify_messages[0]["message"])
+            self.assertIn("Route: LaLiga", state.gotify_messages[0]["message"])
+            self.assertIn("Block status: INACTIVE -> ACTIVE", state.gotify_messages[0]["message"])
+            self.assertIn("IP list: +2 added, -1 removed", state.gotify_messages[0]["message"])
+            self.assertIn("Blocking: ACTIVE", state.gotify_messages[0]["message"])
 
     def test_telegram_notification_is_sent_for_block_change(self) -> None:
         state = FakeState(
@@ -893,4 +895,6 @@ class ServiceIntegrationTests(unittest.TestCase):
 
             self.assertEqual(len(state.telegram_messages), 1)
             self.assertEqual(state.telegram_messages[0]["chat_id"], "123456")
-            self.assertIn("Block status changed: inactive", state.telegram_messages[0]["text"])
+            self.assertIn("Route: LaLiga", state.telegram_messages[0]["text"])
+            self.assertIn("Block status: ACTIVE -> INACTIVE", state.telegram_messages[0]["text"])
+            self.assertIn("Blocking: INACTIVE", state.telegram_messages[0]["text"])

@@ -161,4 +161,4 @@ STOPLIGA_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram_bot_token
 ## Image
 
 - `bluepr0/stopliga:latest`
-- `bluepr0/stopliga:0.1.4`
+- `bluepr0/stopliga:0.1.5`

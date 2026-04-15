@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -15,7 +16,7 @@ if str(SRC) not in sys.path:
 from stopliga.errors import InvalidFeedError  # noqa: E402
 from stopliga.feed import parse_ip_list, parse_status_payload  # noqa: E402
 from stopliga.state import StateStore  # noqa: E402
-from stopliga.unifi import build_ip_objects  # noqa: E402
+from stopliga.unifi import build_ip_objects, build_route_update_template  # noqa: E402
 
 
 class FeedParsingTests(unittest.TestCase):
@@ -56,16 +57,32 @@ class StateStoreTests(unittest.TestCase):
     def test_healthcheck_uses_last_success_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = StateStore(Path(tmpdir) / "state.json")
+            recent = datetime.now(timezone.utc) - timedelta(seconds=10)
             store.path.write_text(
-                """{
+                f"""{{
                   "status": "success",
-                  "last_success_at": "2099-01-01T00:00:00+00:00"
-                }""",
+                  "last_success_at": "{recent.isoformat()}"
+                }}""",
                 encoding="utf-8",
             )
             healthy, message = store.healthcheck(60)
             self.assertTrue(healthy)
             self.assertIn("healthy", message)
+
+    def test_healthcheck_rejects_future_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = StateStore(Path(tmpdir) / "state.json")
+            future = datetime.now(timezone.utc) + timedelta(hours=1)
+            store.path.write_text(
+                f"""{{
+                  "status": "success",
+                  "last_success_at": "{future.isoformat()}"
+                }}""",
+                encoding="utf-8",
+            )
+            healthy, message = store.healthcheck(60)
+            self.assertFalse(healthy)
+            self.assertIn("future", message)
 
 
 class RoutePayloadTests(unittest.TestCase):
@@ -84,3 +101,23 @@ class RoutePayloadTests(unittest.TestCase):
                 {"ip_or_subnet": "2001:db8::/32", "ip_version": "v6", "ports": [], "port_ranges": []},
             ],
         )
+
+    def test_build_route_update_template_discards_unknown_fields(self) -> None:
+        payload = build_route_update_template(
+            {
+                "_id": "route-1",
+                "description": "LaLiga",
+                "enabled": True,
+                "network_id": "vpn-network-1",
+                "target_devices": [],
+                "ip_addresses": [{"ip_or_subnet": "192.0.2.1", "ip_version": "v4"}],
+                "computed_status": "internal-only",
+                "destination": {
+                    "items": ["192.0.2.1"],
+                    "temporary_state": "drop-me",
+                },
+            }
+        )
+        self.assertNotIn("_id", payload)
+        self.assertNotIn("computed_status", payload)
+        self.assertEqual(payload["destination"], {"items": ["192.0.2.1"]})

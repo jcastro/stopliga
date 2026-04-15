@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 from threading import Event
 
-from .errors import ConfigError, RouteNotFoundError, StopLigaError, UnsupportedRouteShapeError
+from .errors import AuthenticationError, ConfigError, PartialUpdateError, RouteNotFoundError, StateError, StopLigaError, UnsupportedRouteShapeError
 from .feed import load_feed_snapshot
 from .logging_utils import log_event
 from .models import BootstrapPreview, Config, FeedSnapshot, StateSnapshot, SyncResult
 from .state import StateStore, utcnow_iso
 from .unifi import (
+    ALL_CLIENTS_TARGET,
     UniFiClient,
     apply_plan,
     build_direct_bootstrap_payload,
@@ -21,7 +22,7 @@ from .unifi import (
 )
 
 
-FATAL_LOOP_ERRORS = (ConfigError, UnsupportedRouteShapeError)
+FATAL_LOOP_ERRORS = (AuthenticationError, ConfigError, StateError, UnsupportedRouteShapeError)
 
 
 class StopLigaService:
@@ -32,9 +33,21 @@ class StopLigaService:
         self.logger = logging.getLogger("stopliga.service")
         self.state_store = StateStore(config.state_file)
 
-    def _write_state(self, *, status: str, result: SyncResult | None = None, error: str | None = None) -> None:
+    def _write_state(
+        self,
+        *,
+        status: str,
+        result: SyncResult | None = None,
+        error: str | None = None,
+        partial_failure: bool = False,
+        error_stage: str | None = None,
+    ) -> None:
         now = utcnow_iso()
-        previous = self.state_store.load()
+        try:
+            previous = self.state_store.load()
+        except (ConfigError, StateError) as exc:
+            previous = {}
+            log_event(self.logger, logging.WARNING, "state_load_failed", error=exc)
         snapshot = StateSnapshot(
             status=status,
             run_mode=self.config.run_mode,
@@ -51,16 +64,23 @@ class StopLigaService:
             changed=result.changed if result else False,
             created=result.created if result else False,
             dry_run=result.dry_run if result else False,
+            partial_failure=partial_failure,
+            last_error_stage=error_stage,
             bootstrap_source=result.bootstrap_source if result else previous.get("bootstrap_source"),
             bootstrap_network_id=result.bootstrap_network_id if result else previous.get("bootstrap_network_id"),
             bootstrap_target_macs=result.bootstrap_target_macs if result else tuple(previous.get("bootstrap_target_macs", [])),
         )
         self.state_store.write(snapshot)
 
+    def _bootstrap_requires_manual_review(self, source: str | None) -> bool:
+        return bool(source and source.startswith("auto-bootstrap"))
+
     def _route_target_macs(self, route_record: dict[str, object]) -> tuple[str, ...]:
         target_devices = route_record.get("target_devices")
         if not isinstance(target_devices, list):
             return ()
+        if any(isinstance(item, dict) and item.get("type") == "ALL_CLIENTS" for item in target_devices):
+            return ("__all_clients__",)
         macs: list[str] = []
         for item in target_devices:
             if isinstance(item, dict):
@@ -70,13 +90,94 @@ class StopLigaService:
         return tuple(sorted(set(macs)))
 
     def _is_pending_auto_bootstrap(self, route_record: dict[str, object], state: dict[str, object]) -> bool:
-        if state.get("bootstrap_source") != "auto-bootstrap":
+        if not self._bootstrap_requires_manual_review(str(state.get("bootstrap_source") or "")):
             return False
         route_network_id = route_record.get("network_id")
         if not isinstance(route_network_id, str) or route_network_id.strip() != str(state.get("bootstrap_network_id", "")).strip():
             return False
         saved_macs = tuple(sorted(str(item).strip().lower() for item in state.get("bootstrap_target_macs", []) if str(item).strip()))
         return saved_macs == self._route_target_macs(route_record)
+
+    def _build_result(
+        self,
+        *,
+        plan,
+        feed_snapshot: FeedSnapshot,
+        created: bool,
+        bootstrap_source: str | None,
+        bootstrap_network_id: str | None,
+        bootstrap_target_macs: tuple[str, ...],
+    ) -> SyncResult:
+        return SyncResult(
+            mode="local",
+            route_name=self.config.route_name,
+            route_id=plan.route_id,
+            backend_name=plan.backend_name,
+            changed=created or plan.has_changes,
+            created=created,
+            dry_run=self.config.dry_run,
+            desired_enabled=plan.desired_enabled,
+            current_enabled=plan.current_enabled,
+            desired_destinations=len(plan.desired_destinations),
+            current_destinations=len(plan.current_destinations),
+            invalid_entries=feed_snapshot.invalid_count,
+            feed_hash=feed_snapshot.feed_hash,
+            destinations_hash=feed_snapshot.destinations_hash,
+            summary=summarize_plan(plan, feed_snapshot),
+            bootstrap_source=bootstrap_source,
+            bootstrap_network_id=bootstrap_network_id,
+            bootstrap_target_macs=bootstrap_target_macs,
+        )
+
+    def _plan_route_update(
+        self,
+        *,
+        backend,
+        endpoint: str,
+        route_record: dict[str, object],
+        feed_snapshot: FeedSnapshot,
+        previous_state: dict[str, object],
+        created: bool,
+        bootstrap_source: str | None,
+        bootstrap_network_id: str | None,
+        bootstrap_target_macs: tuple[str, ...],
+        client: UniFiClient,
+    ) -> SyncResult:
+        desired_enabled = feed_snapshot.desired_enabled
+        if self._bootstrap_requires_manual_review(bootstrap_source) or self._is_pending_auto_bootstrap(route_record, previous_state):
+            if desired_enabled:
+                log_event(
+                    self.logger,
+                    logging.WARNING,
+                    "route_incomplete",
+                    route=self.config.route_name,
+                    reason="auto_bootstrap_pending_manual_review",
+                )
+            desired_enabled = False
+            if not bootstrap_source:
+                bootstrap_source = "auto-bootstrap"
+                bootstrap_network_id = str(route_record.get("network_id") or "") or None
+                bootstrap_target_macs = self._route_target_macs(route_record)
+
+        try:
+            plan = backend.build_plan(endpoint, route_record, feed_snapshot.destinations, desired_enabled)
+        except UnsupportedRouteShapeError:
+            if self.config.dump_payloads_on_error:
+                log_unsupported_shape(self.logger, route_record)
+            raise
+
+        result = self._build_result(
+            plan=plan,
+            feed_snapshot=feed_snapshot,
+            created=created,
+            bootstrap_source=bootstrap_source,
+            bootstrap_network_id=bootstrap_network_id,
+            bootstrap_target_macs=bootstrap_target_macs,
+        )
+        log_event(self.logger, logging.INFO, "route_plan", mode="local", summary=result.summary)
+        if not self.config.dry_run and plan.has_changes:
+            apply_plan(client, backend, plan)
+        return result
 
     def _bootstrap_route(
         self,
@@ -102,7 +203,7 @@ class StopLigaService:
                 desired_ips=desired_ips,
                 desired_enabled=False,
                 vpn_network_id=str(vpn_network.get("_id")),
-                target_devices=[],
+                target_devices=[ALL_CLIENTS_TARGET],
             )
             source = "auto-bootstrap"
         return (
@@ -161,10 +262,11 @@ class StopLigaService:
                     bootstrap_network_id=str(preview.payload.get("network_id") or "") or None,
                     bootstrap_target_macs=self._route_target_macs(preview.payload),
                 )
+            applied_preview = preview
             try:
                 bootstrap_backend.create_route(preview.payload)
             except StopLigaError as exc:
-                if preview.source == "auto-bootstrap" and not preview.payload.get("target_devices"):
+                if preview.source == "auto-bootstrap":
                     target_device = client.pick_default_target_device()
                     fallback_payload = dict(preview.payload)
                     fallback_payload["target_devices"] = [target_device]
@@ -174,161 +276,41 @@ class StopLigaService:
                         "route_bootstrap_retry",
                         backend=preview.backend_name,
                         source="auto-bootstrap-device-fallback",
-                        reason="empty_target_devices_rejected",
+                        reason="all_clients_target_rejected",
                     )
                     try:
                         bootstrap_backend.create_route(fallback_payload)
-                    except StopLigaError:
-                        pass
-                    else:
-                        created = True
-                        bootstrap_source = "auto-bootstrap-device-fallback"
-                        bootstrap_network_id = str(fallback_payload.get("network_id") or "") or None
-                        bootstrap_target_macs = self._route_target_macs(fallback_payload)
-                        backend, endpoint, route_record = choose_existing_route_backend(client, site_context, self.config.route_name)
-                        desired_enabled = feed_snapshot.desired_enabled
-                        if bootstrap_source == "auto-bootstrap" or self._is_pending_auto_bootstrap(route_record, previous_state):
-                            if desired_enabled:
-                                log_event(
-                                    self.logger,
-                                    logging.WARNING,
-                                    "route_incomplete",
-                                    route=self.config.route_name,
-                                    reason="auto_bootstrap_pending_manual_review",
-                                )
-                            desired_enabled = False
-                            if not bootstrap_source:
-                                bootstrap_source = "auto-bootstrap"
-                                bootstrap_network_id = str(route_record.get("network_id") or "") or None
-                                bootstrap_target_macs = self._route_target_macs(route_record)
-                        try:
-                            plan = backend.build_plan(endpoint, route_record, feed_snapshot.destinations, desired_enabled)
-                        except UnsupportedRouteShapeError:
-                            if self.config.dump_payloads_on_error:
-                                log_unsupported_shape(self.logger, route_record)
-                            raise
-
-                        summary = summarize_plan(plan, feed_snapshot)
-                        log_event(self.logger, logging.INFO, "route_plan", mode="local", summary=summary)
-                        if self.config.dry_run:
-                            return SyncResult(
-                                mode="local",
-                                route_name=self.config.route_name,
-                                route_id=plan.route_id,
-                                backend_name=plan.backend_name,
-                                changed=created or plan.has_changes,
-                                created=created,
-                                dry_run=True,
-                                desired_enabled=plan.desired_enabled,
-                                current_enabled=plan.current_enabled,
-                                desired_destinations=len(plan.desired_destinations),
-                                current_destinations=len(plan.current_destinations),
-                                invalid_entries=feed_snapshot.invalid_count,
-                                feed_hash=feed_snapshot.feed_hash,
-                                destinations_hash=feed_snapshot.destinations_hash,
-                                summary=summary,
-                                bootstrap_source=bootstrap_source,
-                                bootstrap_network_id=bootstrap_network_id,
-                                bootstrap_target_macs=bootstrap_target_macs,
-                            )
-                        if plan.has_changes:
-                            apply_plan(client, backend, plan)
-                        return SyncResult(
-                            mode="local",
-                            route_name=self.config.route_name,
-                            route_id=plan.route_id,
-                            backend_name=plan.backend_name,
-                            changed=created or plan.has_changes,
-                            created=created,
-                            dry_run=False,
-                            desired_enabled=plan.desired_enabled,
-                            current_enabled=plan.current_enabled,
-                            desired_destinations=len(plan.desired_destinations),
-                            current_destinations=len(plan.current_destinations),
-                            invalid_entries=feed_snapshot.invalid_count,
-                            feed_hash=feed_snapshot.feed_hash,
-                            destinations_hash=feed_snapshot.destinations_hash,
-                            summary=summary,
-                            bootstrap_source=bootstrap_source,
-                            bootstrap_network_id=bootstrap_network_id,
-                            bootstrap_target_macs=bootstrap_target_macs,
-                        )
-                raise RouteNotFoundError(
-                    f"Route {self.config.route_name!r} not found and bootstrap via {preview.source} failed: {exc}"
-                ) from exc
+                    except StopLigaError as fallback_exc:
+                        raise RouteNotFoundError(
+                            f"Route {self.config.route_name!r} not found and bootstrap failed. "
+                            f"Primary error: {exc}. Fallback error: {fallback_exc}"
+                        ) from fallback_exc
+                    applied_preview = BootstrapPreview(
+                        backend_name=preview.backend_name,
+                        payload=fallback_payload,
+                        source="auto-bootstrap-device-fallback",
+                    )
+                else:
+                    raise RouteNotFoundError(
+                        f"Route {self.config.route_name!r} not found and bootstrap via {preview.source} failed: {exc}"
+                    ) from exc
             created = True
-            bootstrap_source = preview.source
-            bootstrap_network_id = str(preview.payload.get("network_id") or "") or None
-            bootstrap_target_macs = self._route_target_macs(preview.payload)
+            bootstrap_source = applied_preview.source
+            bootstrap_network_id = str(applied_preview.payload.get("network_id") or "") or None
+            bootstrap_target_macs = self._route_target_macs(applied_preview.payload)
             backend, endpoint, route_record = choose_existing_route_backend(client, site_context, self.config.route_name)
 
-        desired_enabled = feed_snapshot.desired_enabled
-        if bootstrap_source == "auto-bootstrap" or self._is_pending_auto_bootstrap(route_record, previous_state):
-            if desired_enabled:
-                log_event(
-                    self.logger,
-                    logging.WARNING,
-                    "route_incomplete",
-                    route=self.config.route_name,
-                    reason="auto_bootstrap_pending_manual_review",
-                )
-            desired_enabled = False
-            if not bootstrap_source:
-                bootstrap_source = "auto-bootstrap"
-                bootstrap_network_id = str(route_record.get("network_id") or "") or None
-                bootstrap_target_macs = self._route_target_macs(route_record)
-
-        try:
-            plan = backend.build_plan(endpoint, route_record, feed_snapshot.destinations, desired_enabled)
-        except UnsupportedRouteShapeError:
-            if self.config.dump_payloads_on_error:
-                log_unsupported_shape(self.logger, route_record)
-            raise
-
-        summary = summarize_plan(plan, feed_snapshot)
-        log_event(self.logger, logging.INFO, "route_plan", mode="local", summary=summary)
-        if self.config.dry_run:
-            return SyncResult(
-                mode="local",
-                route_name=self.config.route_name,
-                route_id=plan.route_id,
-                backend_name=plan.backend_name,
-                changed=created or plan.has_changes,
-                created=created,
-                dry_run=True,
-                desired_enabled=plan.desired_enabled,
-                current_enabled=plan.current_enabled,
-                desired_destinations=len(plan.desired_destinations),
-                current_destinations=len(plan.current_destinations),
-                invalid_entries=feed_snapshot.invalid_count,
-                feed_hash=feed_snapshot.feed_hash,
-                destinations_hash=feed_snapshot.destinations_hash,
-                summary=summary,
-                bootstrap_source=bootstrap_source,
-                bootstrap_network_id=bootstrap_network_id,
-                bootstrap_target_macs=bootstrap_target_macs,
-            )
-        if plan.has_changes:
-            apply_plan(client, backend, plan)
-        return SyncResult(
-            mode="local",
-            route_name=self.config.route_name,
-            route_id=plan.route_id,
-            backend_name=plan.backend_name,
-            changed=created or plan.has_changes,
+        return self._plan_route_update(
+            backend=backend,
+            endpoint=endpoint,
+            route_record=route_record,
+            feed_snapshot=feed_snapshot,
+            previous_state=previous_state,
             created=created,
-            dry_run=False,
-            desired_enabled=plan.desired_enabled,
-            current_enabled=plan.current_enabled,
-            desired_destinations=len(plan.desired_destinations),
-            current_destinations=len(plan.current_destinations),
-            invalid_entries=feed_snapshot.invalid_count,
-            feed_hash=feed_snapshot.feed_hash,
-            destinations_hash=feed_snapshot.destinations_hash,
-            summary=summary,
             bootstrap_source=bootstrap_source,
             bootstrap_network_id=bootstrap_network_id,
             bootstrap_target_macs=bootstrap_target_macs,
+            client=client,
         )
 
     def run_once(self) -> SyncResult:
@@ -356,7 +338,15 @@ class StopLigaService:
             )
             return result
         except StopLigaError as exc:
-            self._write_state(status="error", error=str(exc))
+            try:
+                self._write_state(
+                    status="error",
+                    error=str(exc),
+                    partial_failure=isinstance(exc, PartialUpdateError),
+                    error_stage=exc.stage if isinstance(exc, PartialUpdateError) else None,
+                )
+            except StateError as state_exc:
+                log_event(self.logger, logging.ERROR, "state_write_failed", error=state_exc, original_error=exc)
             raise
 
     def run_loop(self, stop_event: Event) -> int:
@@ -367,7 +357,15 @@ class StopLigaService:
             except FATAL_LOOP_ERRORS:
                 raise
             except StopLigaError as exc:
-                self._write_state(status="error", error=str(exc))
+                try:
+                    self._write_state(
+                        status="error",
+                        error=str(exc),
+                        partial_failure=isinstance(exc, PartialUpdateError),
+                        error_stage=exc.stage if isinstance(exc, PartialUpdateError) else None,
+                    )
+                except StateError as state_exc:
+                    log_event(self.logger, logging.ERROR, "state_write_failed", error=state_exc, original_error=exc)
                 log_event(self.logger, logging.ERROR, "loop_iteration_failed", error=exc)
             if stop_event.wait(self.config.interval_seconds):
                 break

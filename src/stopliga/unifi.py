@@ -12,13 +12,50 @@ import urllib.error
 import urllib.request
 from typing import Any, Iterable, Sequence
 
-from .errors import AuthenticationError, ConfigError, DiscoveryError, DuplicateRouteError, NetworkError, RemoteRequestError, RouteNotFoundError, StopLigaError, UnsupportedRouteShapeError
+from .errors import AuthenticationError, ConfigError, DiscoveryError, DuplicateRouteError, NetworkError, PartialUpdateError, RemoteRequestError, RouteNotFoundError, StopLigaError, UnsupportedRouteShapeError
 from .logging_utils import log_event
 from .models import BootstrapPreview, Config, FeedSnapshot, SiteContext, UpdatePlan
 from .utils import canonicalize_ip_token, make_ssl_context, shorten_json, sleep_with_backoff, sort_ip_tokens
 
 
 MAC_RE = re.compile(r"^[0-9a-fA-F]{2}([:-]?[0-9a-fA-F]{2}){5}$")
+SAFE_RETRY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+ALL_CLIENTS_TARGET = {"type": "ALL_CLIENTS"}
+TOP_LEVEL_ROUTE_UPDATE_FIELDS = frozenset(
+    {
+        "name",
+        "description",
+        "desc",
+        "enabled",
+        "network_id",
+        "next_hop",
+        "matching_target",
+        "kill_switch_enabled",
+        "target_devices",
+        "domains",
+        "ip_addresses",
+        "ip_ranges",
+        "regions",
+        "destinations",
+        "trafficMatchingListId",
+        "traffic_matching_list_id",
+        "destinationTrafficMatchingListId",
+        "destination_traffic_matching_list_id",
+        "matchingListId",
+    }
+)
+DESTINATION_UPDATE_FIELDS = frozenset(
+    {
+        "ip_addresses",
+        "ips",
+        "items",
+        "trafficMatchingListId",
+        "traffic_matching_list_id",
+        "destinationTrafficMatchingListId",
+        "destination_traffic_matching_list_id",
+        "matchingListId",
+    }
+)
 
 
 def extract_records(payload: Any) -> list[dict[str, Any]]:
@@ -291,6 +328,26 @@ def set_nested(payload: dict[str, Any], path: str, value: Any, *, create_missing
     current[parts[-1]] = value
 
 
+def build_route_update_template(route_record: dict[str, Any]) -> dict[str, Any]:
+    """Build a minimal writable route payload from the current UniFi route record."""
+
+    payload: dict[str, Any] = {}
+    for key in TOP_LEVEL_ROUTE_UPDATE_FIELDS:
+        if key in route_record:
+            payload[key] = copy.deepcopy(route_record[key])
+
+    destination = route_record.get("destination")
+    if isinstance(destination, dict):
+        destination_payload = {
+            key: copy.deepcopy(value)
+            for key, value in destination.items()
+            if key in DESTINATION_UPDATE_FIELDS
+        }
+        if destination_payload:
+            payload["destination"] = destination_payload
+    return payload
+
+
 def normalize_mac(value: str) -> str:
     """Normalize a MAC address to lower-case colon-separated form."""
 
@@ -328,6 +385,7 @@ class UniFiClient:
         self.login_path: str | None = None
         self.network_prefix: str | None = None
         self.site_context: SiteContext | None = None
+        self.use_api_key = bool(config.api_key)
 
         cookie_jar = http.cookiejar.CookieJar()
         context = make_ssl_context(verify=config.unifi_verify_tls, ca_file=config.unifi_ca_file)
@@ -363,12 +421,14 @@ class UniFiClient:
         expected_statuses: Sequence[int] = (200,),
         require_json: bool = True,
         retry_on_auth: bool = True,
+        retriable: bool | None = None,
     ) -> Any:
         """Perform an API request through the selected UniFi transport."""
 
+        method_name = method.upper()
         body_bytes = None
         headers = {"Accept": "application/json"}
-        if self.config.api_key:
+        if self.use_api_key and self.config.api_key:
             headers["X-API-Key"] = self.config.api_key
         if json_body is not None:
             body_bytes = json.dumps(json_body).encode("utf-8")
@@ -377,11 +437,12 @@ class UniFiClient:
             headers["X-CSRF-Token"] = self.csrf_token
 
         url = self._build_url(path)
-        attempts = max(1, self.config.retries)
+        should_retry = retriable if retriable is not None else method_name in SAFE_RETRY_METHODS
+        attempts = max(1, self.config.retries) if should_retry else 1
         last_error: Exception | None = None
 
         for attempt in range(1, attempts + 1):
-            request = urllib.request.Request(url, data=body_bytes, headers=headers, method=method.upper())
+            request = urllib.request.Request(url, data=body_bytes, headers=headers, method=method_name)
             try:
                 with self.opener.open(request, timeout=self.config.request_timeout) as response:
                     self._update_csrf_token(response.headers)
@@ -401,6 +462,23 @@ class UniFiClient:
                 try:
                     body = exc.read().decode("utf-8", errors="replace")
                     self._update_csrf_token(exc.headers)
+                    if self.use_api_key and exc.code in {401, 403}:
+                        if retry_on_auth and self.config.username and self.config.password:
+                            log_event(self.logger, logging.WARNING, "unifi_api_key_fallback", path=path, status=exc.code)
+                            self.use_api_key = False
+                            self.logged_in = False
+                            self.login_path = None
+                            self.login(force=True)
+                            return self.request(
+                                method_name,
+                                path,
+                                json_body=json_body,
+                                expected_statuses=expected_statuses,
+                                require_json=require_json,
+                                retry_on_auth=False,
+                                retriable=retriable,
+                            )
+                        raise AuthenticationError(f"UniFi API key rejected for {path} with HTTP {exc.code}") from exc
                     if (
                         exc.code == 401
                         and retry_on_auth
@@ -418,7 +496,7 @@ class UniFiClient:
                             require_json=require_json,
                             retry_on_auth=False,
                         )
-                    if exc.code in {429, 500, 502, 503, 504} and attempt < attempts:
+                    if should_retry and exc.code in {429, 500, 502, 503, 504} and attempt < attempts:
                         log_event(
                             self.logger,
                             logging.WARNING,
@@ -431,7 +509,7 @@ class UniFiClient:
                         )
                         sleep_with_backoff(attempt)
                         continue
-                    raise RemoteRequestError(f"{method} {path} returned {exc.code}: {body[:700]}") from exc
+                    raise RemoteRequestError(f"{method_name} {path} returned {exc.code}: {body[:700]}") from exc
                 finally:
                     exc.close()
             except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
@@ -455,7 +533,7 @@ class UniFiClient:
     def login(self, force: bool = False) -> None:
         """Authenticate to UniFi."""
 
-        if self.config.api_key:
+        if self.use_api_key and self.config.api_key:
             self.logged_in = True
             self.login_path = None
             return
@@ -471,7 +549,14 @@ class UniFiClient:
         errors: list[str] = []
         for path, payload in candidates:
             try:
-                response = self.request("POST", path, json_body=payload, expected_statuses=(200,), retry_on_auth=False)
+                response = self.request(
+                    "POST",
+                    path,
+                    json_body=payload,
+                    expected_statuses=(200,),
+                    retry_on_auth=False,
+                    retriable=True,
+                )
                 if isinstance(response, dict) and response.get("meta", {}).get("rc") == "error":
                     errors.append(f"{path}: {response}")
                     continue
@@ -823,12 +908,12 @@ class BaseRouteBackend:
         *,
         allow_missing: bool,
     ) -> tuple[dict[str, Any], list[str], list[str]]:
-        payload = copy.deepcopy(route_record)
-        path = self._resolve_destination_path(payload, allow_missing=allow_missing)
+        path = self._resolve_destination_path(route_record, allow_missing=allow_missing)
+        payload = build_route_update_template(route_record)
         if path == "linked_list.items":
             return payload, [], []
 
-        existing_entries = get_nested(payload, path)
+        existing_entries = get_nested(route_record, path)
         if existing_entries is None:
             existing_entries = []
         if not isinstance(existing_entries, list):
@@ -836,7 +921,7 @@ class BaseRouteBackend:
 
         current_destinations = normalize_ip_objects(existing_entries)
         desired_value = self._build_destination_value(path, existing_entries, desired_ips)
-        set_nested(payload, path, desired_value, create_missing=allow_missing)
+        set_nested(payload, path, desired_value, create_missing=True)
         if path == "ip_addresses" and "matching_target" in payload and not payload.get("matching_target"):
             payload["matching_target"] = "IP"
         changed_fields = [path] if current_destinations != list(desired_ips) else []
@@ -1012,20 +1097,43 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
     """Apply a route update plan and verify the resulting state."""
 
     logger = logging.getLogger("stopliga.apply")
-    if plan.linked_list_payload and plan.linked_list_endpoint:
-        log_event(logger, logging.INFO, "linked_list_updating", linked_list_id=plan.linked_list_id)
-        client.request("PUT", plan.linked_list_endpoint, json_body=plan.linked_list_payload, expected_statuses=(200, 204))
-    if plan.route_payload:
-        log_event(
-            logger,
-            logging.INFO,
-            "route_updating",
-            route_id=plan.route_id,
-            backend=plan.backend_name,
-            method=plan.route_method,
-        )
-        client.request(plan.route_method, plan.route_endpoint, json_body=plan.route_payload, expected_statuses=(200, 201, 204))
-    backend.verify(plan.route_id, plan.desired_destinations, plan.desired_enabled)
+    operations: list[tuple[str, str, str, dict[str, Any]]] = []
+
+    if plan.route_payload and plan.linked_list_payload:
+        if plan.current_enabled and not plan.desired_enabled:
+            operations.append(("route", plan.route_method, plan.route_endpoint, plan.route_payload))
+            operations.append(("linked_list", "PUT", plan.linked_list_endpoint or "", plan.linked_list_payload))
+        else:
+            operations.append(("linked_list", "PUT", plan.linked_list_endpoint or "", plan.linked_list_payload))
+            operations.append(("route", plan.route_method, plan.route_endpoint, plan.route_payload))
+    elif plan.linked_list_payload and plan.linked_list_endpoint:
+        operations.append(("linked_list", "PUT", plan.linked_list_endpoint, plan.linked_list_payload))
+    elif plan.route_payload:
+        operations.append(("route", plan.route_method, plan.route_endpoint, plan.route_payload))
+
+    completed_steps: list[str] = []
+    try:
+        for stage, method, endpoint, payload in operations:
+            if stage == "linked_list":
+                log_event(logger, logging.INFO, "linked_list_updating", linked_list_id=plan.linked_list_id)
+            else:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "route_updating",
+                    route_id=plan.route_id,
+                    backend=plan.backend_name,
+                    method=method,
+                )
+            client.request(method, endpoint, json_body=payload, expected_statuses=(200, 201, 204))
+            completed_steps.append(stage)
+        backend.verify(plan.route_id, plan.desired_destinations, plan.desired_enabled)
+    except StopLigaError as exc:
+        stage = completed_steps[-1] if completed_steps else "none"
+        raise PartialUpdateError(
+            stage,
+            f"Update failed after completing steps={','.join(completed_steps) or 'none'}: {exc}",
+        ) from exc
 
 
 def summarize_plan(plan: UpdatePlan, feed_snapshot: FeedSnapshot) -> str:

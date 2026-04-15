@@ -151,6 +151,8 @@ class StateSnapshot:
     changed: bool
     created: bool
     dry_run: bool
+    partial_failure: bool = False
+    last_error_stage: str | None = None
     bootstrap_source: str | None = None
     bootstrap_network_id: str | None = None
     bootstrap_target_macs: tuple[str, ...] = ()

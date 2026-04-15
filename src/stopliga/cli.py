@@ -17,6 +17,7 @@ from .errors import (
     NetworkError,
     RemoteRequestError,
     RouteNotFoundError,
+    StateError,
     StopLigaError,
     UnsupportedRouteShapeError,
 )
@@ -74,6 +75,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except AlreadyRunningError as exc:
         log_event(logging.getLogger("stopliga"), logging.ERROR, "lock_busy", error=exc)
         return 6
+    except StateError as exc:
+        log_event(logging.getLogger("stopliga"), logging.ERROR, "state_error", error=exc)
+        return 7
     except (InvalidFeedError, NetworkError, RemoteRequestError, StopLigaError) as exc:
         log_event(logging.getLogger("stopliga"), logging.ERROR, "sync_error", error=exc)
         return 10

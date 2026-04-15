@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
+import tempfile
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .errors import AlreadyRunningError, ConfigError
+from .errors import AlreadyRunningError, ConfigError, StateError
 from .models import StateSnapshot
 from .utils import ensure_parent_dir
 
@@ -35,20 +37,30 @@ class FileLock:
 
     def acquire(self) -> None:
         ensure_parent_dir(self.path)
-        handle = self.path.open("a+", encoding="utf-8")
+        try:
+            handle = self.path.open("a+", encoding="utf-8")
+        except OSError as exc:
+            raise StateError(f"Unable to open lock file {self.path}: {exc}") from exc
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             handle.close()
             raise AlreadyRunningError(f"Another StopLiga process already holds {self.path}") from exc
+        except OSError as exc:
+            handle.close()
+            raise StateError(f"Unable to lock {self.path}: {exc}") from exc
         self._handle = handle
 
     def release(self) -> None:
         if self._handle is None:
             return
-        fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
-        self._handle.close()
-        self._handle = None
+        try:
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        except OSError as exc:
+            raise StateError(f"Unable to unlock {self.path}: {exc}") from exc
+        finally:
+            self._handle.close()
+            self._handle = None
 
     def __enter__(self) -> "FileLock":
         self.acquire()
@@ -69,6 +81,8 @@ class StateStore:
             raw = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return {}
+        except OSError as exc:
+            raise StateError(f"Unable to read state file {self.path}: {exc}") from exc
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -80,18 +94,36 @@ class StateStore:
     def write(self, snapshot: StateSnapshot) -> None:
         ensure_parent_dir(self.path)
         payload = asdict(snapshot)
-        temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
-        temp_path.replace(self.path)
+        temp_name: str | None = None
+        try:
+            fd, temp_name = tempfile.mkstemp(prefix=f"{self.path.name}.", suffix=".tmp", dir=str(self.path.parent))
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=True, indent=2, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, self.path)
+        except OSError as exc:
+            raise StateError(f"Unable to write state file {self.path}: {exc}") from exc
+        finally:
+            if temp_name and os.path.exists(temp_name):
+                os.unlink(temp_name)
 
     def healthcheck(self, max_age_seconds: int) -> tuple[bool, str]:
-        state = self.load()
+        try:
+            state = self.load()
+        except (ConfigError, StateError) as exc:
+            return False, str(exc)
         last_success = state.get("last_success_at")
         status = state.get("status")
         if not last_success or status not in {"success", "dry_run"}:
             return False, "no recent successful run in state file"
 
-        age_seconds = (datetime.now(timezone.utc) - _parse_iso8601(str(last_success))).total_seconds()
+        try:
+            age_seconds = (datetime.now(timezone.utc) - _parse_iso8601(str(last_success))).total_seconds()
+        except ValueError:
+            return False, f"state file contains an invalid last_success_at: {last_success!r}"
+        if age_seconds < -60:
+            return False, f"state file last_success_at is in the future ({int(age_seconds)}s)"
         if age_seconds > max_age_seconds:
             return False, f"last successful run is stale ({int(age_seconds)}s > {max_age_seconds}s)"
         return True, f"healthy, last successful run {int(age_seconds)}s ago"

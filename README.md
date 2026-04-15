@@ -21,7 +21,7 @@ Usa solo la API local del propio router/controlador UniFi. Si la route no existe
 3. Entras en UniFi y eliges la VPN y los equipos desde la UI.
 4. A partir de ahí StopLiga mantiene IPs y enabled/disabled sincronizados con GitHub.
 
-Si tu versión de UniFi no acepta el placeholder, el fallback es crear la route una vez en la UI y dejar que StopLiga la gestione después.
+Si tu versión de UniFi no acepta el placeholder con `Source = Any`, el fallback es crear la route una vez en la UI o degradar a un dispositivo concreto si ese backend obliga a ello.
 
 ## Configuración mínima
 
@@ -44,7 +44,7 @@ Variables opcionales para creación completa de la route:
 - `STOPLIGA_VPN_NAME`
 - `STOPLIGA_TARGETS`
 
-Con esas dos, si la route no existe, StopLiga puede crearla ya asociada a una VPN cliente y a equipos concretos. Si no se aportan, intentará crear un placeholder deshabilitado y vacío de VPN/targets.
+Con esas dos, si la route no existe, StopLiga puede crearla ya asociada a una VPN cliente y a equipos concretos. Si no se aportan, intentará crear un placeholder deshabilitado usando `Source = Any` y la primera VPN cliente disponible.
 
 ## Variables de entorno
 
@@ -112,10 +112,10 @@ Si la route existe:
 Si la route no existe:
 
 - intenta crear `StopLiga`
-- si no hay `STOPLIGA_VPN_NAME` ni `STOPLIGA_TARGETS`, usa la primera VPN cliente disponible de forma determinista y deja el source en `Any`
+- si no hay `STOPLIGA_VPN_NAME` ni `STOPLIGA_TARGETS`, usa la primera VPN cliente disponible de forma determinista y crea `Source = Any` con `target_devices=[{"type":"ALL_CLIENTS"}]`
 - si sí existen, intenta crearla completa
 
-Si se autocrea sin variables explícitas, StopLiga guarda esa asignación automática como provisional y no la habilitará hasta que el usuario cambie VPN o targets desde la UI de UniFi.
+Si se autocrea sin variables explícitas, StopLiga guarda esa asignación automática como provisional y no la habilitará hasta que el usuario cambie VPN o targets desde la UI de UniFi. Si un backend rechaza `ALL_CLIENTS`, el último recurso es degradar a un dispositivo concreto y dejar igualmente la route deshabilitada hasta revisión manual.
 
 ## Uso rápido
 

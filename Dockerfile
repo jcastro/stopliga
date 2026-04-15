@@ -1,4 +1,6 @@
-FROM python:3.12-slim AS builder
+ARG PYTHON_BASE=python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286
+
+FROM ${PYTHON_BASE} AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -12,11 +14,11 @@ RUN python -m venv /opt/venv
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN pip install --upgrade pip setuptools wheel \
+RUN pip install --upgrade pip==26.0.1 setuptools==82.0.1 wheel==0.46.3 \
     && pip install .
 
 
-FROM python:3.12-slim AS runtime
+FROM ${PYTHON_BASE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

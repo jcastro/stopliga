@@ -43,3 +43,15 @@ class UnsupportedRouteShapeError(StopLigaError):
 
 class AlreadyRunningError(StopLigaError):
     """Raised when another process already owns the local lock file."""
+
+
+class StateError(StopLigaError):
+    """Raised when state persistence or lock management fails."""
+
+
+class PartialUpdateError(StopLigaError):
+    """Raised when a multi-step remote update partially succeeds before failing."""
+
+    def __init__(self, stage: str, message: str):
+        super().__init__(message)
+        self.stage = stage

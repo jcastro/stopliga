@@ -9,6 +9,7 @@ from .errors import AuthenticationError, ConfigError, PartialUpdateError, RouteN
 from .feed import load_feed_snapshot
 from .logging_utils import log_event
 from .models import BootstrapPreview, Config, FeedSnapshot, StateSnapshot, SyncResult
+from .notifier import send_notifications
 from .state import StateStore, utcnow_iso
 from .unifi import (
     ALL_CLIENTS_TARGET,
@@ -104,6 +105,7 @@ class StopLigaService:
             changed=False,
             created=False,
             dry_run=False,
+            last_is_blocked=None,
             bootstrap_source=result.bootstrap_source,
             bootstrap_network_id=result.bootstrap_network_id,
             bootstrap_target_macs=result.bootstrap_target_macs,
@@ -143,6 +145,7 @@ class StopLigaService:
             consecutive_failures=0 if status in {"success", "dry_run"} else previous_failures + 1,
             partial_failure=partial_failure,
             last_error_stage=error_stage,
+            last_is_blocked=result.is_blocked if result else previous.get("last_is_blocked"),
             bootstrap_source=result.bootstrap_source if result else previous.get("bootstrap_source"),
             bootstrap_network_id=result.bootstrap_network_id if result else previous.get("bootstrap_network_id"),
             bootstrap_target_macs=result.bootstrap_target_macs if result else tuple(previous.get("bootstrap_target_macs", [])),
@@ -185,6 +188,8 @@ class StopLigaService:
         bootstrap_network_id: str | None,
         bootstrap_target_macs: tuple[str, ...],
     ) -> SyncResult:
+        added_destinations = len([ip for ip in plan.desired_destinations if ip not in plan.current_destinations])
+        removed_destinations = len([ip for ip in plan.current_destinations if ip not in plan.desired_destinations])
         return SyncResult(
             mode="local",
             route_name=self.config.route_name,
@@ -201,6 +206,9 @@ class StopLigaService:
             feed_hash=feed_snapshot.feed_hash,
             destinations_hash=feed_snapshot.destinations_hash,
             summary=summarize_plan(plan, feed_snapshot),
+            is_blocked=feed_snapshot.is_blocked,
+            added_destinations=added_destinations,
+            removed_destinations=removed_destinations,
             bootstrap_source=bootstrap_source,
             bootstrap_network_id=bootstrap_network_id,
             bootstrap_target_macs=bootstrap_target_macs,
@@ -437,10 +445,15 @@ class StopLigaService:
             dry_run=self.config.dry_run,
         )
         try:
+            previous_runtime_state = self._load_runtime_state()
             feed_snapshot = load_feed_snapshot(self.config)
             result = self._run_once(feed_snapshot)
             self._write_state(status="dry_run" if result.dry_run else "success", result=result)
             self._write_bootstrap_guard(result)
+            try:
+                send_notifications(self.config, result, previous_runtime_state)
+            except StopLigaError as exc:
+                log_event(self.logger, logging.WARNING, "notification_failed", error=exc)
             log_event(
                 self.logger,
                 logging.INFO,

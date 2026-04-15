@@ -148,3 +148,29 @@ site = "default"
                         "UNIFI_API_KEY_FILE": str(api_key_file),
                     },
                 )
+
+    def test_partial_gotify_configuration_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_GOTIFY_URL": "https://gotify.example",
+                },
+            )
+
+    def test_partial_telegram_configuration_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_TELEGRAM_CHAT_ID": "1234",
+                },
+            )

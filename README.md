@@ -45,6 +45,13 @@ UNIFI_VERIFY_TLS=false
 STOPLIGA_RUN_MODE=loop
 STOPLIGA_SYNC_INTERVAL_SECONDS=300
 STOPLIGA_ROUTE_NAME=StopLiga
+
+# Optional notifications
+# STOPLIGA_GOTIFY_URL=https://gotify.example.com
+# STOPLIGA_GOTIFY_TOKEN=replace-me
+# STOPLIGA_GOTIFY_PRIORITY=5
+# STOPLIGA_TELEGRAM_BOT_TOKEN=123456:replace-me
+# STOPLIGA_TELEGRAM_CHAT_ID=123456789
 ```
 
 Create the secret file on the host:
@@ -83,13 +90,10 @@ services:
       - .env
     command: ["--loop"]
     volumes:
-      - stopliga_data:/data
+      - ./data:/data
       - ./secrets:/run/secrets:ro
     healthcheck:
       disable: true
-
-volumes:
-  stopliga_data:
 ```
 
 ## Docker Run
@@ -99,7 +103,7 @@ docker run -d \
   --name stopliga \
   --restart unless-stopped \
   --env-file .env \
-  -v stopliga_data:/data \
+  -v "$(pwd)/data:/data" \
   -v "$(pwd)/secrets:/run/secrets:ro" \
   bluepr0/stopliga:latest --loop
 ```
@@ -116,6 +120,37 @@ Typical loop logs:
 - `route_plan`
 - `sync_finish`
 
+## Notifications
+
+Optional notifications are supported for:
+
+- Gotify
+- Telegram bot + chat/user id
+
+Notifications are sent when:
+
+- the block status changes
+- IPs are added or removed
+
+Examples:
+
+```dotenv
+STOPLIGA_GOTIFY_URL=https://gotify.example.com
+STOPLIGA_GOTIFY_TOKEN=replace-me
+```
+
+```dotenv
+STOPLIGA_TELEGRAM_BOT_TOKEN=123456:replace-me
+STOPLIGA_TELEGRAM_CHAT_ID=123456789
+```
+
+Token files are also supported:
+
+```dotenv
+STOPLIGA_GOTIFY_TOKEN_FILE=/run/secrets/gotify_token
+STOPLIGA_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram_bot_token
+```
+
 ## Notes
 
 - API key auth is preferred.
@@ -126,5 +161,4 @@ Typical loop logs:
 ## Image
 
 - `bluepr0/stopliga:latest`
-- `bluepr0/stopliga:0.1.3`
-
+- `bluepr0/stopliga:0.1.4`

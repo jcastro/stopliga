@@ -48,6 +48,8 @@ class FakeState:
     session_authenticated: bool = False
     fail_v2_route_list: bool = False
     fail_route_update: bool = False
+    gotify_messages: list[dict[str, Any]] = field(default_factory=list)
+    telegram_messages: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FakeUniFiHandler(BaseHTTPRequestHandler):
@@ -130,6 +132,18 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
             self.state.created_route_counter += 1
             self.state.route = {"_id": f"created-{self.state.created_route_counter}", **payload}
             self._send_json(201, clone(self.state.route))
+            return
+
+        if path == "/gotify/message":
+            payload = self._read_json()
+            self.state.gotify_messages.append(payload)
+            self._send_json(200, {"id": len(self.state.gotify_messages)})
+            return
+
+        if path.startswith("/telegram/bot") and path.endswith("/sendMessage"):
+            payload = self._read_json()
+            self.state.telegram_messages.append(payload)
+            self._send_json(200, {"ok": True})
             return
 
         self._send_json(404, {"error": "not-found", "path": parsed.path})
@@ -810,3 +824,73 @@ class ServiceIntegrationTests(unittest.TestCase):
             result = StopLigaService(config).run_once()
             self.assertTrue(result.changed)
             self.assertFalse(state.route["enabled"])
+
+    def test_gotify_notification_is_sent_for_block_and_ip_changes(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": True},
+            ip_lines=["192.0.2.10", "198.51.100.0/24"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": False,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+            state_path = Path(tmpdir) / "state.json"
+            state_path.write_text(json.dumps({"last_is_blocked": False}), encoding="utf-8")
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                gotify_url=f"{feed.base_url}/gotify",
+                gotify_token="gotify-token",
+            )
+            StopLigaService(config).run_once()
+            self.assertEqual(len(state.gotify_messages), 1)
+            self.assertIn("Block status changed: active", state.gotify_messages[0]["message"])
+            self.assertIn("IP list updated (+2, -1)", state.gotify_messages[0]["message"])
+
+    def test_telegram_notification_is_sent_for_block_change(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": False},
+            ip_lines=["192.0.2.10"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": True,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+            state_path = Path(tmpdir) / "state.json"
+            state_path.write_text(json.dumps({"last_is_blocked": True}), encoding="utf-8")
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                telegram_bot_token=f"{feed.base_url}/telegram/bot-token".replace(f"{feed.base_url}/", ""),
+                telegram_chat_id="123456",
+            )
+            import stopliga.notifier as notifier  # noqa: WPS433
+
+            original_post_json = notifier._post_json
+
+            def fake_post_json(url: str, payload: dict[str, Any], *, timeout: float) -> None:
+                state.telegram_messages.append({"url": url, **payload})
+
+            notifier._post_json = fake_post_json
+            try:
+                StopLigaService(config).run_once()
+            finally:
+                notifier._post_json = original_post_json
+
+            self.assertEqual(len(state.telegram_messages), 1)
+            self.assertEqual(state.telegram_messages[0]["chat_id"], "123456")
+            self.assertIn("Block status changed: inactive", state.telegram_messages[0]["text"])

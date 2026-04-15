@@ -116,8 +116,9 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
     unifi = raw.get("unifi", {})
     feeds = raw.get("feeds", {})
     bootstrap = raw.get("bootstrap", {})
-    if not all(isinstance(section, dict) for section in (app, unifi, feeds, bootstrap)):
-        raise ConfigError("Config sections app/unifi/feeds/bootstrap must be TOML tables")
+    notifications = raw.get("notifications", {})
+    if not all(isinstance(section, dict) for section in (app, unifi, feeds, bootstrap, notifications)):
+        raise ConfigError("Config sections app/unifi/feeds/bootstrap/notifications must be TOML tables")
 
     return {
         "run_mode": app.get("run_mode"),
@@ -152,6 +153,11 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "vpn_name": bootstrap.get("vpn_name"),
         "target_clients": bootstrap.get("target_clients"),
         "dump_payloads_on_error": app.get("dump_payloads_on_error"),
+        "gotify_url": notifications.get("gotify_url"),
+        "gotify_token": notifications.get("gotify_token"),
+        "gotify_priority": notifications.get("gotify_priority"),
+        "telegram_bot_token": notifications.get("telegram_bot_token"),
+        "telegram_chat_id": notifications.get("telegram_chat_id"),
     }
 
 
@@ -200,6 +206,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default=None)
     parser.add_argument("--verbose", action="store_true", help="Shortcut for --log-level DEBUG")
     parser.add_argument("--disable-when-blocked", action="store_true", default=None)
+    parser.add_argument("--gotify-url", default=None, help="Gotify server URL")
+    parser.add_argument("--gotify-token", default=None, help="Gotify application token")
+    parser.add_argument("--gotify-priority", type=int, default=None, help="Gotify priority")
+    parser.add_argument("--telegram-bot-token", default=None, help="Telegram bot token")
+    parser.add_argument("--telegram-chat-id", default=None, help="Telegram user/chat id")
 
     run_group = parser.add_mutually_exclusive_group()
     run_group.add_argument("--once", action="store_true", default=None, help="Run a single sync and exit")
@@ -378,6 +389,26 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             _first(args.dump_payloads_on_error, _env_value(env, "STOPLIGA_DUMP_PAYLOADS_ON_ERROR"), file_cfg.get("dump_payloads_on_error"), DEFAULTS.dump_payloads_on_error),
             field_name="dump_payloads_on_error",
         ),
+        gotify_url=_first(args.gotify_url, _env_value(env, "STOPLIGA_GOTIFY_URL"), file_cfg.get("gotify_url"), DEFAULTS.gotify_url),
+        gotify_token=_first(
+            args.gotify_token,
+            _env_secret_first(env, field_name="gotify_token", key="STOPLIGA_GOTIFY_TOKEN", key_file="STOPLIGA_GOTIFY_TOKEN_FILE"),
+            file_cfg.get("gotify_token"),
+            DEFAULTS.gotify_token,
+        ),
+        gotify_priority=_parse_int(
+            _first(args.gotify_priority, _env_value(env, "STOPLIGA_GOTIFY_PRIORITY"), file_cfg.get("gotify_priority"), DEFAULTS.gotify_priority),
+            field_name="gotify_priority",
+        ),
+        telegram_bot_token=_first(
+            args.telegram_bot_token,
+            _env_secret_first(env, field_name="telegram_bot_token", key="STOPLIGA_TELEGRAM_BOT_TOKEN", key_file="STOPLIGA_TELEGRAM_BOT_TOKEN_FILE"),
+            file_cfg.get("telegram_bot_token"),
+            DEFAULTS.telegram_bot_token,
+        ),
+        telegram_chat_id=str(
+            _first(args.telegram_chat_id, _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"), file_cfg.get("telegram_chat_id"), DEFAULTS.telegram_chat_id)
+        ) if _first(args.telegram_chat_id, _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"), file_cfg.get("telegram_chat_id"), DEFAULTS.telegram_chat_id) is not None else None,
     )
 
     validate_config(config, validate_connection=validate and not args.healthcheck)
@@ -399,6 +430,10 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError(f"invalid_entry_policy must be fail|ignore, not {config.invalid_entry_policy!r}")
     if bool(config.vpn_name) != bool(config.target_clients):
         raise ConfigError("Automatic route creation requires both STOPLIGA_VPN_NAME and STOPLIGA_TARGETS")
+    if bool(config.gotify_url) != bool(config.gotify_token):
+        raise ConfigError("Gotify notifications require both STOPLIGA_GOTIFY_URL and STOPLIGA_GOTIFY_TOKEN")
+    if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
+        raise ConfigError("Telegram notifications require both STOPLIGA_TELEGRAM_BOT_TOKEN and STOPLIGA_TELEGRAM_CHAT_ID")
     _validate_feed_url(config.status_url, field_name="status_url", allow_private_hosts=config.feed_allow_private_hosts)
     _validate_feed_url(config.ip_list_url, field_name="ip_list_url", allow_private_hosts=config.feed_allow_private_hosts)
     if validate_connection:

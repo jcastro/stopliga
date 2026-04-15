@@ -49,9 +49,20 @@ class Config:
     vpn_name: str | None = None
     target_clients: tuple[str, ...] = ()
     dump_payloads_on_error: bool = False
+    gotify_url: str | None = None
+    gotify_token: str | None = None
+    gotify_priority: int = 5
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
 
     def has_unifi_auth(self) -> bool:
         return bool(self.host and ((self.api_key and self.api_key.strip()) or (self.username and self.password)))
+
+    def has_notifications(self) -> bool:
+        return bool(
+            (self.gotify_url and self.gotify_token)
+            or (self.telegram_bot_token and self.telegram_chat_id)
+        )
 
     def resolved_health_max_age(self) -> int:
         if self.health_max_age_seconds is not None and self.health_max_age_seconds > 0:
@@ -132,6 +143,9 @@ class SyncResult:
     feed_hash: str
     destinations_hash: str
     summary: str
+    is_blocked: bool = False
+    added_destinations: int = 0
+    removed_destinations: int = 0
     bootstrap_source: str | None = None
     bootstrap_network_id: str | None = None
     bootstrap_target_macs: tuple[str, ...] = ()
@@ -157,6 +171,7 @@ class StateSnapshot:
     consecutive_failures: int = 0
     partial_failure: bool = False
     last_error_stage: str | None = None
+    last_is_blocked: bool | None = None
     bootstrap_source: str | None = None
     bootstrap_network_id: str | None = None
     bootstrap_target_macs: tuple[str, ...] = ()

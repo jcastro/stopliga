@@ -7,10 +7,7 @@ services:
       - .env
     command: ["--loop"]
     volumes:
-      - stopliga_data:/data
+      - ./data:/data
       - ./secrets:/run/secrets:ro
     healthcheck:
       disable: true
-
-volumes:
-  stopliga_data:

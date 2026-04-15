@@ -1,0 +1,32 @@
+[app]
+run_mode = "loop"
+interval_seconds = 300
+route_name = "StopLiga"
+destination_field = "auto"
+enable_when_blocked = true
+request_timeout = 15
+retries = 4
+dry_run = false
+invalid_entry_policy = "fail"
+max_destinations = 2048
+state_file = "/data/state.json"
+lock_file = "/data/stopliga.lock"
+log_level = "INFO"
+dump_payloads_on_error = false
+
+[feeds]
+status_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_status.json"
+ip_list_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
+verify_tls = true
+
+[unifi]
+host = "192.168.1.1"
+port = 443
+username = "admin"
+password = "change-me"
+site = "default"
+verify_tls = true
+
+[bootstrap]
+vpn_name = "Mullvad DE"
+target_clients = ["apple-tv", "ps5", "aa:bb:cc:dd:ee:ff"]

@@ -172,6 +172,21 @@ site = "default"
                 },
             )
 
+    def test_telegram_topic_requires_group_target(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_TELEGRAM_BOT_TOKEN": "123456:test",
+                    "STOPLIGA_TELEGRAM_CHAT_ID": "1234",
+                    "STOPLIGA_TELEGRAM_TOPIC_ID": "42",
+                },
+            )
+
     def test_telegram_group_and_topic_load_successfully(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])

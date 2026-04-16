@@ -536,8 +536,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError(
             "Telegram notifications require STOPLIGA_TELEGRAM_BOT_TOKEN and either STOPLIGA_TELEGRAM_CHAT_ID or STOPLIGA_TELEGRAM_GROUP_ID"
         )
-    if config.telegram_topic_id is not None and not telegram_target:
-        raise ConfigError("STOPLIGA_TELEGRAM_TOPIC_ID requires STOPLIGA_TELEGRAM_GROUP_ID or STOPLIGA_TELEGRAM_CHAT_ID")
+    if config.telegram_topic_id is not None and not config.telegram_group_id:
+        raise ConfigError("STOPLIGA_TELEGRAM_TOPIC_ID requires STOPLIGA_TELEGRAM_GROUP_ID")
     if config.telegram_topic_id is not None and config.telegram_topic_id <= 0:
         raise ConfigError("STOPLIGA_TELEGRAM_TOPIC_ID must be > 0")
     if validate_connection:

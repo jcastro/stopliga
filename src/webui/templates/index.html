@@ -49,8 +49,7 @@
       0%, 100% { opacity: 1;    transform: scale(1);    }
       50%       { opacity: 0.65; transform: scale(0.96); }
     }
-    .big-status.red,
-    .big-status.green {
+    .breathe-icon {
       animation: breathe 2.8s ease-in-out infinite;
       display: inline-flex;
     }
@@ -230,8 +229,8 @@
       /* ── LaLiga status ── */
       const blocked = s.last_is_blocked;
       let blockedLabel, blockedClass;
-      if (blocked === true)       { blockedLabel = "🔴 ACTIVO";     blockedClass = "red";  }
-      else if (blocked === false) { blockedLabel = "🟢 INACTIVO";   blockedClass = "green"; }
+      if (blocked === true)       { blockedLabel = "<span class='breathe-icon'>🔴</span> ACTIVO";     blockedClass = "red";  }
+      else if (blocked === false) { blockedLabel = "<span class='breathe-icon'>🟢</span> INACTIVO";   blockedClass = "green"; }
       else                        { blockedLabel = "⚪ DESCONOCIDO"; blockedClass = "gray";  }
 
       const routeEnabled = s.desired_enabled;

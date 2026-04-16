@@ -1,6 +1,7 @@
 services:
   stopliga:
-    image: ghcr.io/jcastro/stopliga:latest
+    #image: ghcr.io/jcastro/stopliga:latest
+    build: .
     container_name: stopliga
     restart: unless-stopped
     env_file:
@@ -8,7 +9,7 @@ services:
     volumes:
       - ./data:/data
     # Uncomment to enable the web UI (also set STOPLIGA_WEBUI_ENABLED=true in .env)
-    # ports:
-    #   - "8080:8080"
+    ports:
+      - "8181:8080"
     healthcheck:
       disable: true

@@ -192,3 +192,5 @@ class StateSnapshot:
     bootstrap_source: str | None = None
     bootstrap_network_id: str | None = None
     bootstrap_target_macs: tuple[str, ...] = ()
+    desired_destinations: int | None = None
+    desired_enabled: bool | None = None

@@ -183,6 +183,8 @@ class StopLigaService:
             bootstrap_source=result.bootstrap_source if result else self._optional_str(previous, "bootstrap_source"),
             bootstrap_network_id=result.bootstrap_network_id if result else self._optional_str(previous, "bootstrap_network_id"),
             bootstrap_target_macs=result.bootstrap_target_macs if result else self._string_tuple(previous, "bootstrap_target_macs"),
+            desired_destinations=result.desired_destinations if result else self._optional_int(previous, "desired_destinations"),
+            desired_enabled=result.desired_enabled if result else self._optional_bool(previous, "desired_enabled"),
         )
         self.state_store.write(snapshot)
 
@@ -195,6 +197,11 @@ class StopLigaService:
     def _optional_bool(payload: dict[str, object], key: str) -> bool | None:
         value = payload.get(key)
         return value if isinstance(value, bool) else None
+
+    @staticmethod
+    def _optional_int(payload: dict[str, object], key: str) -> int | None:
+        value = payload.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     @staticmethod
     def _string_tuple(payload: dict[str, object], key: str) -> tuple[str, ...]:

@@ -5,187 +5,337 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>StopLiga</title>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Inter:wght@400;500;600&display=swap');
+
+    html { font-size: 120%; }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --sc-lowest:  #0d0e13;
+      --sc-low:     #1a1b21;
+      --sc:         #1e1f25;
+      --sc-high:    #292a2f;
+      --sc-highest: #34343a;
+      --on-surface: #e3e1e9;
+      --on-var:     #b9cacb;
+      --primary:    #dbfcff;
+      --cyan:       #00f0ff;
+      --cyan-dim:   #00dbe9;
+      --error:      #ffb4ab;
+      --outline:    #3b494b;
+      --green:      #4ade80;
+      --yellow:     #fbbf24;
+    }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #121318;
+      color: var(--on-surface);
       min-height: 100vh;
-      padding: 2rem 1rem;
+      background-image: radial-gradient(circle, rgba(59,73,75,0.18) 1px, transparent 1px);
+      background-size: 24px 24px;
     }
+
+    /* ── Scanline ── */
+    .scanline {
+      position: fixed; top: 0; left: 0;
+      width: 100%; height: 2px;
+      background: rgba(0,240,255,0.045);
+      pointer-events: none; z-index: 9999;
+      animation: scan 8s linear infinite;
+    }
+    @keyframes scan {
+      0%   { transform: translateY(-2px); }
+      100% { transform: translateY(100vh); }
+    }
+
+    /* ── Page wrapper ── */
+    .page {
+      max-width: 1040px; margin: 0 auto;
+      min-height: 100vh; display: flex; flex-direction: column;
+    }
+
+    /* ── Header ── */
     header {
-      max-width: 960px;
-      margin: 0 auto 2rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 0.5rem;
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(18,19,24,0.97);
+      border-bottom: 1px solid rgba(59,73,75,0.35);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 1.5rem; height: 52px;
     }
-    h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; }
-    #header-right {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
+    .header-left { display: flex; align-items: center; gap: 1.25rem;}
+    .header-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 1rem; font-weight: 700;
+      letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--primary);
     }
-    #last-updated { font-size: 0.8rem; color: #64748b; }
+    .header-sep { width: 1px; height: 14px; background: rgba(59,73,75,0.6); }
+    .header-node {
+      font-family: monospace; font-size: 0.62rem;
+      color: var(--on-var); text-transform: uppercase; letter-spacing: 0.1em;
+    }
+    .header-right { display: flex; align-items: center; }
+    .timestamp-block {
+      display: flex; align-items: center; gap: 0.5rem;
+      background: var(--sc-low);
+      border: 1px solid rgba(59,73,75,0.35);
+      padding: 0.28rem 0.7rem;
+    }
+    #last-updated {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.62rem; font-weight: 600;
+      color: var(--on-var); text-transform: uppercase; letter-spacing: 0.08em;
+    }
     #refresh-btn {
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: #475569;
-      padding: 0.25rem;
-      border-radius: 0.375rem;
-      display: flex;
-      align-items: center;
-      transition: color 0.15s;
-      line-height: 0;
+      background: none; border: none; cursor: pointer;
+      color: var(--cyan); display: flex; align-items: center;
+      padding: 0.1rem; transition: opacity 0.15s; line-height: 0;
     }
-    #refresh-btn:hover { color: #94a3b8; }
-    #refresh-btn svg { width: 15px; height: 15px; }
+    #refresh-btn:hover { opacity: 0.65; }
+    #refresh-btn svg { width: 13px; height: 13px; }
     @keyframes spin { to { transform: rotate(360deg); } }
     #refresh-btn.spinning svg { animation: spin 0.55s linear; }
-    @keyframes breathe {
-      0%, 100% { opacity: 1;    transform: scale(1);    }
-      50%       { opacity: 0.65; transform: scale(0.96); }
+
+    /* ── Layout ── */
+    main {
+      padding: 1rem 1.5rem 2rem;
+      flex: 1;
     }
-    .breathe-icon {
-      animation: breathe 2.8s ease-in-out infinite;
-      display: inline-flex;
-    }
+
+    /* ── Cards ── */
     .grid {
-      max-width: 960px;
-      margin: 0 auto;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1px;
+      background: rgba(59,73,75,0.25);
+      border: 1px solid rgba(59,73,75,0.25);
+      margin-bottom: 1px;
     }
     .card {
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 0.75rem;
-      padding: 1.25rem 1.5rem;
+      background: var(--sc-low);
+      border-top: 2px solid var(--outline);
+      padding: 1.25rem 1.5rem 1.1rem;
+      display: flex; flex-direction: column; gap: 0.8rem;
+    }
+    .card--cyan { border-top-color: var(--cyan); }
+    .card--red  { border-top-color: var(--error); }
+    .card--dim  { border-top-color: rgba(0,219,233,0.35); }
+
+    .card-header {
+      display: flex; justify-content: space-between; align-items: center;
     }
     .card-label {
-      font-size: 0.7rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #64748b;
-      margin-bottom: 0.75rem;
+      font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.18em; color: var(--on-var);
     }
-    .big-status {
-      font-size: 1.5rem;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
+
+    /* ── Status display ── */
+    .status-display { display: flex; align-items: center; gap: 0.75rem; }
+    .status-dot { position: relative; width: 14px; height: 14px; flex-shrink: 0; }
+    .status-dot-inner { width: 14px; height: 14px; border-radius: 50%; }
+    .status-dot-glow  { position: absolute; inset: 0; border-radius: 50%; opacity: 0; }
+    .dot-red  .status-dot-inner { background: var(--error); }
+    .dot-red  .status-dot-glow  { background: var(--error); box-shadow: 0 0 10px var(--error); }
+    .dot-cyan .status-dot-inner { background: var(--cyan); box-shadow: 0 0 6px rgba(0,240,255,0.5); }
+    .dot-cyan .status-dot-glow  { background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }
+    .dot-gray .status-dot-inner { background: var(--on-var); }
+
+    @keyframes breathe {
+      0%, 100% { opacity: 0.15; transform: scale(1); }
+      50%       { opacity: 0.55; transform: scale(1.7); }
     }
-    .red    { color: #f87171; }
-    .green  { color: #4ade80; }
-    .gray   { color: #94a3b8; }
-    .yellow { color: #fbbf24; }
-    .blue   { color: #60a5fa; }
-    .dot {
-      display: inline-block;
-      width: 9px; height: 9px;
-      border-radius: 50%;
-      flex-shrink: 0;
+    .dot-red  .status-dot-glow,
+    .dot-cyan .status-dot-glow { animation: breathe 2.8s ease-in-out infinite; }
+
+    .status-text {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 2.1rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1;
     }
-    .dot-green { background: #4ade80; }
-    .dot-red   { background: #f87171; }
-    .meta {
-      font-size: 0.82rem;
-      color: #94a3b8;
-      margin-top: 0.4rem;
-      line-height: 1.5;
+    .text-error  { color: var(--error); }
+    .text-cyan   { color: var(--primary); }
+    .text-on-var { color: var(--on-var); }
+
+    .card-detail {
+      background: var(--sc-lowest);
+      border-left: 2px solid rgba(59,73,75,0.6);
+      padding: 0.38rem 0.75rem;
+      font-size: 0.68rem; font-family: monospace;
+      color: var(--on-var); text-transform: uppercase; letter-spacing: 0.04em;
     }
-    .meta strong { color: #cbd5e1; }
-    .ip-number { font-size: 2.75rem; font-weight: 700; color: #60a5fa; line-height: 1; }
+    .card-detail .val       { color: var(--on-surface); }
+    .card-detail .val-red   { color: var(--error);  font-weight: 700; }
+    .card-detail .val-cyan  { color: var(--cyan);   font-weight: 700; }
+
+    /* UniFi meta grid */
+    .meta-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem;
+      font-size: 0.63rem; font-family: monospace;
+      color: var(--on-var); text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .meta-grid .full { grid-column: 1 / -1; }
+    .meta-grid .val      { color: var(--on-surface); }
+    .meta-grid .val-cyan { color: var(--cyan); font-weight: 700; }
+
+    /* IP card */
+    .ip-number {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 3.25rem; font-weight: 700; line-height: 1;
+      color: var(--cyan-dim); letter-spacing: -0.03em;
+    }
+    .ip-sub {
+      font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.14em; color: var(--on-var); margin-top: 0.15rem;
+    }
+    .ip-bar { width: 100%; height: 2px; background: var(--sc-highest); margin-top: 0.5rem; }
+    .ip-bar-fill { height: 100%; background: var(--cyan); transition: width 0.4s ease; }
+
     .warn-badge {
-      display: inline-block;
-      margin-top: 0.5rem;
-      font-size: 0.78rem;
-      color: #fbbf24;
-      background: rgba(251,191,36,0.1);
-      border: 1px solid rgba(251,191,36,0.25);
-      border-radius: 0.375rem;
-      padding: 0.2rem 0.5rem;
+      display: inline-block; font-size: 0.66rem; font-weight: 600;
+      color: var(--yellow); background: rgba(251,191,36,0.07);
+      border: 1px solid rgba(251,191,36,0.22); padding: 0.15rem 0.5rem;
     }
+
+    /* ── Sync table ── */
     .section {
-      max-width: 960px;
-      margin: 1.25rem auto 0;
+      border: 1px solid rgba(59,73,75,0.25);
+      border-top: 2px solid rgba(0,240,255,0.2);
+      background: var(--sc-low);
     }
-    .section-label {
-      font-size: 0.7rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #64748b;
-      margin-bottom: 0.6rem;
-      padding: 0 0.25rem;
+    .table-header {
+      background: var(--sc-high);
+      border-bottom: 1px solid rgba(59,73,75,0.3);
+      padding: 0.7rem 1.5rem;
+      display: flex; justify-content: space-between; align-items: center;
     }
-    .table {
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 0.75rem;
-      overflow: hidden;
+    .table-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.62rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.2em; color: var(--primary);
     }
-    .row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0.8rem 1.5rem;
-      border-bottom: 1px solid #334155;
-      font-size: 0.85rem;
-      gap: 1rem;
+    .badge-live {
+      font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+      background: rgba(0,240,255,0.07); color: var(--cyan);
+      padding: 0.13rem 0.45rem; border: 1px solid rgba(0,240,255,0.2);
     }
-    .row:last-child { border-bottom: none; }
-    .row:nth-child(odd) { background: #1a2435; }
-    .row-key { color: #94a3b8; white-space: nowrap; }
-    .row-val { color: #e2e8f0; font-family: monospace; text-align: right; word-break: break-all; }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-family: monospace; font-size: 0.77rem; }
+    thead tr { background: var(--sc-lowest); border-bottom: 1px solid rgba(59,73,75,0.3); }
+    th {
+      padding: 0.55rem 1.25rem;
+      font-size: 0.58rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.15em; color: var(--on-var); text-align: left; white-space: nowrap;
+    }
+    th:last-child { text-align: right; }
+    tbody tr { border-bottom: 1px solid rgba(59,73,75,0.1); transition: background 0.1s; }
+    tbody tr:hover { background: var(--sc-high); }
+    td { padding: 0.85rem 1.25rem; color: var(--on-surface); }
+    td:last-child { text-align: right; }
+    .td-rel {
+      display: block; font-size: 0.58rem; font-weight: 700;
+      text-transform: uppercase; color: rgba(185,202,203,0.45);
+      letter-spacing: 0.08em; margin-top: 0.12rem;
+    }
+    .status-pill { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .pill-dot { width: 7px; height: 7px; border-radius: 50%; }
+    .pill-dot-cyan { background: var(--cyan); box-shadow: 0 0 4px var(--cyan); }
+    .pill-dot-red  { background: var(--error); box-shadow: 0 0 4px var(--error); }
+    .pill-text      { color: var(--cyan);  font-weight: 700; text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.1em; }
+    .pill-text-red  { color: var(--error); font-weight: 700; text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.1em; }
+    .mode-badge {
+      background: var(--sc-highest); color: var(--primary);
+      padding: 0.18rem 0.55rem; border: 1px solid var(--outline);
+      font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .changed-neutral { color: var(--on-var); font-style: italic; }
+    .changed-green   { color: var(--green); }
+
+    /* ── Alerts ── */
     .alert {
-      max-width: 960px;
-      margin: 1rem auto 0;
-      padding: 0.875rem 1.25rem;
-      border-radius: 0.75rem;
-      font-size: 0.85rem;
-      line-height: 1.5;
+      margin-top: 1px; padding: 0.75rem 1.25rem;
+      font-size: 0.82rem; line-height: 1.55;
+      border-left: 3px solid; border-top: 1px solid;
     }
     .alert-error {
-      background: rgba(239,68,68,0.1);
-      border: 1px solid rgba(239,68,68,0.3);
-      color: #fca5a5;
+      background: rgba(255,180,171,0.05); border-color: var(--error);
+      border-top-color: rgba(255,180,171,0.15); color: #fca5a5;
     }
     .alert-warn {
-      background: rgba(251,191,36,0.1);
-      border: 1px solid rgba(251,191,36,0.3);
-      color: #fde68a;
+      background: rgba(251,191,36,0.05); border-color: var(--yellow);
+      border-top-color: rgba(251,191,36,0.15); color: #fde68a;
     }
+
+    /* ── Pending ── */
     .pending-msg {
-      max-width: 960px;
-      margin: 5rem auto;
-      text-align: center;
-      color: #64748b;
-      font-size: 1rem;
+      text-align: center; color: var(--on-var);
+      font-family: monospace; font-size: 0.85rem;
+      text-transform: uppercase; letter-spacing: 0.1em;
+      padding: 5rem 1rem;
+    }
+
+    /* ── Footer ── */
+    footer {
+      margin-top: 1px;
+      padding: 0.65rem 1.5rem;
+      border-top: 1px solid rgba(59,73,75,0.2);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .footer-stats { display: flex; gap: 1.5rem; }
+    .footer-stat {
+      display: flex; align-items: center; gap: 0.35rem;
+      font-family: monospace; font-size: 0.58rem;
+      text-transform: uppercase; letter-spacing: 0.08em; color: var(--on-var);
+    }
+    .footer-dot { width: 5px; height: 5px; border-radius: 50%; }
+    .footer-dot-cyan { background: var(--cyan); }
+    .footer-dot-red  { background: var(--error); }
+    .footer-dot-gray { background: var(--on-var); }
+    .footer-copy {
+      font-family: monospace; font-size: 0.58rem;
+      text-transform: uppercase; color: rgba(185,202,203,0.25); letter-spacing: 0.06em;
     }
   </style>
 </head>
 <body>
+  <div class="scanline"></div>
+  <div class="page">
+
   <header>
-    <h1>🛡️ StopLiga</h1>
-    <div id="header-right">
-      <span id="last-updated"></span>
-      <button id="refresh-btn" title="Actualizar ahora" onclick="manualRefresh()">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-             stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
-          <path d="M21 3v5h-5"/>
-        </svg>
-      </button>
+    <div class="header-left">
+      <span class="header-title">StopLiga</span>
+      <div class="header-sep"></div>
+      <span class="header-node">Tebas... Te Bas?</span>
+    </div>
+    <div class="header-right">
+      <div class="timestamp-block">
+        <span id="last-updated"></span>
+        <button id="refresh-btn" title="Actualizar ahora" onclick="manualRefresh()">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+            <path d="M21 3v5h-5"/>
+          </svg>
+        </button>
+      </div>
     </div>
   </header>
-  <div id="root"></div>
+
+  <main>
+    <div id="root"></div>
+  </main>
+
+  <footer>
+    <div class="footer-stats" id="footer-stats">
+      <div class="footer-stat">
+        <div class="footer-dot footer-dot-gray"></div>
+        <span>System: —</span>
+      </div>
+    </div>
+    <div class="footer-copy">© 2026 StopLiga</div>
+  </footer>
+
+  </div><!-- /.page -->
 
   <script>
     function rel(iso) {
@@ -209,29 +359,44 @@
     }
 
     function render(s) {
-      const root = document.getElementById("root");
+      const root        = document.getElementById("root");
+      const footerStats = document.getElementById("footer-stats");
 
       if (!s || s.status === "pending") {
-        root.innerHTML = `<div class="pending-msg"><p>⏳ Esperando primera sincronización…</p></div>`;
+        root.innerHTML = `<div class="pending-msg">⏳ Esperando primera sincronización…</div>`;
         return;
       }
 
       const connected = s.status === "success" || s.status === "dry_run";
       const failures  = s.consecutive_failures || 0;
       const backends  = {
-        "v2-trafficroutes":        "API Moderna (v2)",
+        "v2-trafficroutes":         "API Moderna (v2)",
         "legacy-rest-trafficroute": "API Legacy"
       };
       const backend = backends[s.last_backend] || s.last_backend || "—";
 
-      let html = `<div class="grid">`;
-
-      /* ── LaLiga status ── */
+      /* LaLiga status */
       const blocked = s.last_is_blocked;
-      let blockedLabel, blockedClass;
-      if (blocked === true)       { blockedLabel = "<span class='breathe-icon'>🔴</span> ACTIVO";     blockedClass = "red";  }
-      else if (blocked === false) { blockedLabel = "<span class='breathe-icon'>🟢</span> INACTIVO";   blockedClass = "green"; }
-      else                        { blockedLabel = "⚪ DESCONOCIDO"; blockedClass = "gray";  }
+      let blockedText, blockedClass, dotClass, detailValClass, blockCardClass;
+      if (blocked === true) {
+        blockedText    = "ACTIVO";
+        blockedClass   = "text-error";
+        dotClass       = "dot-red";
+        detailValClass = "val-red";
+        blockCardClass = "card--red";
+      } else if (blocked === false) {
+        blockedText    = "INACTIVO";
+        blockedClass   = "text-cyan";
+        dotClass       = "dot-cyan";
+        detailValClass = "val-cyan";
+        blockCardClass = "card--cyan";
+      } else {
+        blockedText    = "DESCONOCIDO";
+        blockedClass   = "text-on-var";
+        dotClass       = "dot-gray";
+        detailValClass = "val";
+        blockCardClass = "";
+      }
 
       const routeEnabled = s.desired_enabled;
       const routeState   = routeEnabled === true
@@ -240,85 +405,143 @@
           ? "deshabilitada"
           : "desconocido";
 
-      html += `
-        <div class="card">
-          <div class="card-label">Estado LaLiga</div>
-          <div class="big-status ${blockedClass}">${blockedLabel}</div>
-          <div class="meta">Ruta en UniFi: <strong>${routeState}</strong></div>
-        </div>`;
+      /* UniFi */
+      const connCardClass  = connected ? "card--cyan" : "card--red";
+      const connDotClass   = connected ? "dot-cyan"   : "dot-red";
+      const connText       = connected ? "Conectado"  : "Sin conexión";
+      const connTextClass  = connected ? "text-cyan"  : "text-error";
 
-      /* ── UniFi connection ── */
-      html += `
-        <div class="card">
-          <div class="card-label">Conexión UniFi</div>
-          <div class="big-status ${connected ? "green" : "red"}">
-            <span class="dot ${connected ? "dot-green" : "dot-red"}"></span>
-            ${connected ? "Conectado" : "Sin conexión"}
-          </div>
-          <div class="meta">Site: <strong>${esc(s.site) || "—"}</strong></div>
-          <div class="meta">Ruta: <strong>${esc(s.route_name) || "—"}</strong></div>
-          <div class="meta">Backend: <strong>${esc(backend)}</strong></div>
-        </div>`;
+      /* IP bar (heuristic max ~2000) */
+      const ipCount  = s.desired_destinations;
+      const fillPct  = ipCount != null ? Math.min(100, Math.round(ipCount / 20)) : 0;
 
-      /* ── IP list ── */
-      html += `
-        <div class="card">
-          <div class="card-label">Lista de IPs</div>
-          <div class="ip-number">${s.desired_destinations != null ? s.desired_destinations : "—"}</div>
-          <div class="meta">destinos activos</div>
-          ${failures > 0
-            ? `<div class="warn-badge">⚠️ ${failures} fallo${failures > 1 ? "s" : ""} consecutivo${failures > 1 ? "s" : ""}</div>`
-            : ""}
-        </div>`;
-
-      html += `</div>`;
-
-      /* ── Last sync table ── */
+      /* Sync table */
       const changedNote = s.changed
         ? (s.created
-            ? " <span class='green'>(ruta creada)</span>"
-            : " <span class='green'>(actualizada)</span>")
-        : " <span class='gray'>(sin cambios)</span>";
+            ? `<span class="changed-green">(ruta creada)</span>`
+            : `<span class="changed-green">(actualizada)</span>`)
+        : `<span class="changed-neutral">(sin cambios)</span>`;
 
-      html += `
+      const pillDotClass  = connected ? "pill-dot pill-dot-cyan" : "pill-dot pill-dot-red";
+      const pillTextClass = connected ? "pill-text"              : "pill-text-red";
+
+      let html = `
+        <div class="grid">
+
+          <!-- LaLiga -->
+          <div class="card ${blockCardClass}">
+            <div class="card-header">
+              <span class="card-label">Estado LaLiga</span>
+            </div>
+            <div class="status-display">
+              <div class="status-dot ${dotClass}">
+                <div class="status-dot-inner"></div>
+                <div class="status-dot-glow"></div>
+              </div>
+              <span class="status-text ${blockedClass}">${blockedText}</span>
+            </div>
+            <div class="card-detail">
+              Ruta en UniFi: <span class="${detailValClass}">${routeState}</span>
+            </div>
+          </div>
+
+          <!-- UniFi -->
+          <div class="card ${connCardClass}">
+            <div class="card-header">
+              <span class="card-label">Conexión UniFi</span>
+            </div>
+            <div class="status-display">
+              <div class="status-dot ${connDotClass}">
+                <div class="status-dot-inner"></div>
+                <div class="status-dot-glow"></div>
+              </div>
+              <span class="status-text ${connTextClass}">${connText}</span>
+            </div>
+            <div class="meta-grid">
+              <div>Site: <span class="val">${esc(s.site) || "—"}</span></div>
+              <div>Ruta: <span class="val">${esc(s.route_name) || "—"}</span></div>
+              <div class="full">Backend: <span class="val-cyan">${esc(backend)}</span></div>
+            </div>
+          </div>
+
+          <!-- IP list -->
+          <div class="card ${connCardClass}">
+            <div class="card-header">
+              <span class="card-label">Lista de IPs</span>
+            </div>
+            <div>
+              <div class="ip-number">${ipCount != null ? ipCount : "—"}</div>
+              <div class="ip-sub">destinos activos</div>
+            </div>
+            ${failures > 0
+              ? `<div class="warn-badge">⚠ ${failures} fallo${failures > 1 ? "s" : ""} consecutivo${failures > 1 ? "s" : ""}</div>`
+              : ""}
+          </div>
+
+        </div>
+
         <div class="section">
-          <div class="section-label">Última sincronización</div>
-          <div class="table">
-            <div class="row">
-              <span class="row-key">Último intento</span>
-              <span class="row-val">${fmt(s.last_attempt_at)} · ${rel(s.last_attempt_at)}</span>
-            </div>
-            <div class="row">
-              <span class="row-key">Último éxito</span>
-              <span class="row-val">${fmt(s.last_success_at)} · ${rel(s.last_success_at)}</span>
-            </div>
-            <div class="row">
-              <span class="row-key">Estado</span>
-              <span class="row-val">${esc(s.status) || "—"}</span>
-            </div>
-            <div class="row">
-              <span class="row-key">Cambios</span>
-              <span class="row-val">${changedNote}</span>
-            </div>
-            <div class="row">
-              <span class="row-key">Modo</span>
-              <span class="row-val">${esc(s.run_mode) || "—"}${s.dry_run ? " (dry-run)" : ""}</span>
-            </div>
+          <div class="table-header">
+            <span class="table-title">Última sincronización</span>
+            <span class="badge-live">Live Data</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Último intento</th>
+                  <th>Último éxito</th>
+                  <th>Estado</th>
+                  <th>Cambios</th>
+                  <th>Modo</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    ${fmt(s.last_attempt_at)}
+                    <span class="td-rel">${rel(s.last_attempt_at)}</span>
+                  </td>
+                  <td>${fmt(s.last_success_at)}</td>
+                  <td>
+                    <div class="status-pill">
+                      <div class="${pillDotClass}"></div>
+                      <span class="${pillTextClass}">${esc(s.status) || "—"}</span>
+                    </div>
+                  </td>
+                  <td>${changedNote}</td>
+                  <td>
+                    <span class="mode-badge">${esc(s.run_mode) || "—"}${s.dry_run ? " · dry-run" : ""}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>`;
 
-      /* ── Alerts ── */
       if (s.last_error) {
         html += `<div class="alert alert-error">❌ <strong>Error:</strong> ${esc(s.last_error)}</div>`;
       }
       if (s.reconciliation_required) {
-        html += `<div class="alert alert-warn">⚠️ <strong>Reconciliación requerida:</strong> Un ciclo anterior terminó en estado inconsistente. Revisa manualmente el estado en UniFi antes de continuar.</div>`;
+        html += `<div class="alert alert-warn">⚠ <strong>Reconciliación requerida:</strong> Un ciclo anterior terminó en estado inconsistente. Revisa manualmente el estado en UniFi antes de continuar.</div>`;
       }
       if (s.bootstrap_source === "auto-bootstrap-device-fallback") {
-        html += `<div class="alert alert-warn">⚠️ <strong>Revisión manual requerida:</strong> La ruta fue creada con un dispositivo individual como fallback. Revisa en UniFi Network que la configuración es correcta.</div>`;
+        html += `<div class="alert alert-warn">⚠ <strong>Revisión manual requerida:</strong> La ruta fue creada con un dispositivo individual como fallback. Revisa en UniFi Network que la configuración es correcta.</div>`;
       }
 
       root.innerHTML = html;
+
+      footerStats.innerHTML = `
+        <div class="footer-stat">
+          <div class="footer-dot ${connected ? "footer-dot-cyan" : "footer-dot-red"}"></div>
+          <span>System: ${connected ? "Stable" : "Error"}</span>
+        </div>
+        <div class="footer-stat">
+          <div class="footer-dot footer-dot-cyan"></div>
+          <span>Sync: ${esc(s.run_mode) || "—"}</span>
+        </div>
+        ${failures > 0 ? `<div class="footer-stat"><div class="footer-dot footer-dot-red"></div><span>Failures: ${failures}</span></div>` : ""}
+      `;
     }
 
     async function refresh() {

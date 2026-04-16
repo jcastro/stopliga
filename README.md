@@ -123,6 +123,51 @@ STOPLIGA_ROUTE_NAME=StopLiga
 STOPLIGA_MAX_RESPONSE_BYTES=2097152
 ```
 
+### Optional Web UI
+
+StopLiga includes a read-only web dashboard. To enable it, add these lines to your `.env` and expose the port in `docker-compose.yml`.
+
+**`.env`**
+
+```dotenv
+STOPLIGA_WEBUI_ENABLED=true
+STOPLIGA_WEBUI_PORT=8080
+STOPLIGA_WEBUI_HOST=0.0.0.0
+```
+
+**`docker-compose.yml`** — add a `ports` entry under the `stopliga` service:
+
+```yaml
+services:
+  stopliga:
+    image: ghcr.io/jcastro/stopliga:latest
+    container_name: stopliga
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+    ports:
+      - "8080:8080"
+    healthcheck:
+      disable: true
+```
+
+Then open `http://<host-ip>:8080` in your browser. The dashboard shows:
+
+- whether the LaLiga block is currently active or inactive
+- the number of IP destinations in the route
+- the UniFi connection status
+- the timestamp of the last successful sync
+
+The dashboard auto-refreshes every 30 seconds, and has a manual refresh button in the top-right corner.
+
+| Variable | Default | What it is for |
+| --- | --- | --- |
+| `STOPLIGA_WEBUI_ENABLED` | `false` | Set to `true` to start the web UI |
+| `STOPLIGA_WEBUI_PORT` | `8080` | Port the web server listens on inside the container |
+| `STOPLIGA_WEBUI_HOST` | `0.0.0.0` | Interface the web server binds to. `0.0.0.0` makes it reachable from outside the container |
+
 ### Optional Notifications
 
 ```dotenv

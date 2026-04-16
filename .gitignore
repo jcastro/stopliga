@@ -4,7 +4,9 @@ __pycache__/
 *.so
 
 .env
+.env.*
 .env.local
+!.env.example
 .venv/
 venv/
 
@@ -21,6 +23,14 @@ dist/
 .tmp/
 
 data/
+secrets/
+config.local.toml
+docker-compose.override.yml
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
 
 .idea/
 .vscode/

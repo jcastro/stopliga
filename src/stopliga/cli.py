@@ -54,6 +54,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_healthcheck(config)
 
         service = StopLigaService(config)
+        if config.webui_enabled:
+            import threading
+            from .webui.server import start_server
+            webui_thread = threading.Thread(
+                target=start_server,
+                args=(config.state_file, config.webui_host, config.webui_port),
+                daemon=True,
+                name="stopliga-webui",
+            )
+            webui_thread.start()
+            log_event(
+                logging.getLogger("stopliga.cli"),
+                logging.INFO,
+                "webui_started",
+                host=config.webui_host,
+                port=config.webui_port,
+            )
         with FileLock(config.lock_file):
             if config.run_mode == "loop":
                 stop_event = Event()

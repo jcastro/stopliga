@@ -1,6 +1,6 @@
 services:
   stopliga:
-    image: ghcr.io/ghosthvj/stopliga:latest
+    image: ghcr.io/jcastro/stopliga:latest
     container_name: stopliga
     restart: unless-stopped
     env_file:

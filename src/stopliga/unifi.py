@@ -381,11 +381,8 @@ class UniFiClient:
         self.config = config
         self.logger = logging.getLogger("stopliga.unifi")
         self.csrf_token: str | None = None
-        self.logged_in = False
-        self.login_path: str | None = None
         self.network_prefix: str | None = None
         self.site_context: SiteContext | None = None
-        self.use_api_key = config.auth_mode != "session" and bool(config.api_key)
 
         cookie_jar = http.cookiejar.CookieJar()
         context = make_ssl_context(verify=config.unifi_verify_tls, ca_file=config.unifi_ca_file)
@@ -415,6 +412,14 @@ class UniFiClient:
         if token:
             self.csrf_token = token
 
+    def _build_auth_headers(self) -> dict[str, str]:
+        if not self.config.api_key:
+            raise AuthenticationError("UNIFI_API_KEY is required")
+        return {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "X-API-Key": self.config.api_key,
+        }
+
     def request(
         self,
         method: str,
@@ -423,16 +428,13 @@ class UniFiClient:
         json_body: Any | None = None,
         expected_statuses: Sequence[int] = (200,),
         require_json: bool = True,
-        retry_on_auth: bool = True,
         retriable: bool | None = None,
     ) -> Any:
         """Perform an API request through the selected UniFi transport."""
 
         method_name = method.upper()
         body_bytes = None
-        headers = {"Accept": "application/json"}
-        if self.use_api_key and self.config.api_key:
-            headers["X-API-Key"] = self.config.api_key
+        headers = {"Accept": "application/json", **self._build_auth_headers()}
         if json_body is not None:
             body_bytes = json.dumps(json_body).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -481,45 +483,8 @@ class UniFiClient:
                     else:
                         body = body_bytes.decode("utf-8", errors="replace")
                     self._update_csrf_token(exc.headers)
-                    if self.use_api_key and exc.code in {401, 403}:
-                        if (
-                            self.config.auth_mode == "auto"
-                            and retry_on_auth
-                            and self.config.username
-                            and self.config.password
-                        ):
-                            log_event(self.logger, logging.WARNING, "unifi_api_key_fallback", path=path, status=exc.code)
-                            self.use_api_key = False
-                            self.logged_in = False
-                            self.login_path = None
-                            self.login(force=True)
-                            return self.request(
-                                method_name,
-                                path,
-                                json_body=json_body,
-                                expected_statuses=expected_statuses,
-                                require_json=require_json,
-                                retry_on_auth=False,
-                                retriable=retriable,
-                            )
-                        raise AuthenticationError(f"UniFi API key rejected for {path} with HTTP {exc.code}") from exc
-                    if (
-                        exc.code == 401
-                        and retry_on_auth
-                        and self.logged_in
-                        and self.login_path
-                        and path != self.login_path
-                    ):
-                        log_event(self.logger, logging.WARNING, "unifi_relogin", path=path)
-                        self.login(force=True)
-                        return self.request(
-                            method,
-                            path,
-                            json_body=json_body,
-                            expected_statuses=expected_statuses,
-                            require_json=require_json,
-                            retry_on_auth=False,
-                        )
+                    if exc.code in {401, 403}:
+                        raise AuthenticationError(f"Unauthorized for {method_name} {path}: check UNIFI_API_KEY") from exc
                     if should_retry and exc.code in {429, 500, 502, 503, 504} and attempt < attempts:
                         log_event(
                             self.logger,
@@ -554,45 +519,11 @@ class UniFiClient:
                 raise NetworkError(f"Network failure for {method} {path}: {exc}") from exc
         raise NetworkError(f"Network failure for {method} {path}: {last_error}")
 
-    def login(self, force: bool = False) -> None:
-        """Authenticate to UniFi."""
+    def authenticate(self) -> None:
+        """Validate that an API key is available for local UniFi requests."""
 
-        if self.use_api_key and self.config.api_key:
-            self.logged_in = True
-            self.login_path = None
-            return
-        if self.config.auth_mode == "api_key":
-            raise AuthenticationError("auth_mode=api_key requires a valid UNIFI_API_KEY")
-
-        if self.logged_in and not force:
-            return
-
-        candidates = [
-            ("/api/auth/login", {"username": self.config.username, "password": self.config.password, "rememberMe": True}),
-            ("/api/auth/login", {"username": self.config.username, "password": self.config.password}),
-            ("/api/login", {"username": self.config.username, "password": self.config.password}),
-        ]
-        errors: list[str] = []
-        for path, payload in candidates:
-            try:
-                response = self.request(
-                    "POST",
-                    path,
-                    json_body=payload,
-                    expected_statuses=(200,),
-                    retry_on_auth=False,
-                    retriable=True,
-                )
-                if isinstance(response, dict) and response.get("meta", {}).get("rc") == "error":
-                    errors.append(f"{path}: {response}")
-                    continue
-                self.logged_in = True
-                self.login_path = path
-                log_event(self.logger, logging.INFO, "unifi_login_ok", path=path)
-                return
-            except StopLigaError as exc:
-                errors.append(str(exc))
-        raise AuthenticationError("Unable to authenticate to UniFi: " + " | ".join(errors))
+        if not self.config.api_key:
+            raise AuthenticationError("UNIFI_API_KEY is required")
 
     def discover_network_prefix(self) -> str:
         """Detect whether UniFi Network is exposed under /proxy/network or root."""

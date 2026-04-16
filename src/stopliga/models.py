@@ -9,7 +9,6 @@ from typing import Any, Literal
 
 RunMode = Literal["once", "loop"]
 InvalidEntryPolicy = Literal["fail", "ignore"]
-AuthMode = Literal["auto", "api_key", "session"]
 
 
 @dataclass(frozen=True)
@@ -17,10 +16,7 @@ class Config:
     run_mode: RunMode = "once"
     host: str | None = None
     port: int = 443
-    auth_mode: AuthMode = "auto"
     api_key: str | None = None
-    username: str | None = None
-    password: str | None = None
     site: str = "default"
     route_name: str = "StopLiga"
     destination_field: str = "auto"
@@ -67,16 +63,8 @@ class Config:
     telegram_verify_tls: bool | None = None
     telegram_ca_file: Path | None = None
 
-    def has_unifi_auth(self) -> bool:
-        has_api_key = bool(self.api_key and self.api_key.strip())
-        has_session = bool(self.username and self.password)
-        if not self.host:
-            return False
-        if self.auth_mode == "api_key":
-            return has_api_key
-        if self.auth_mode == "session":
-            return has_session
-        return has_api_key or has_session
+    def has_local_api_access(self) -> bool:
+        return bool(self.host and self.api_key and self.api_key.strip())
 
     def has_notifications(self) -> bool:
         return bool(

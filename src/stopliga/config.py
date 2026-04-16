@@ -11,7 +11,7 @@ from typing import Any, Mapping, cast
 from urllib.parse import urlparse
 
 from .errors import ConfigError
-from .models import AuthMode, Config, InvalidEntryPolicy, RunMode
+from .models import Config, InvalidEntryPolicy, RunMode
 
 
 DEFAULTS = Config()
@@ -168,10 +168,7 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "run_mode": app.get("run_mode"),
         "host": unifi.get("host"),
         "port": unifi.get("port"),
-        "auth_mode": unifi.get("auth_mode"),
         "api_key": unifi.get("api_key"),
-        "username": unifi.get("username"),
-        "password": unifi.get("password"),
         "site": unifi.get("site"),
         "route_name": app.get("route_name"),
         "destination_field": app.get("destination_field"),
@@ -227,10 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--healthcheck", action="store_true", help="Validate recent state file freshness")
     parser.add_argument("--host", default=None, help="UniFi console host or IP for local mode")
     parser.add_argument("--port", type=int, default=None, help="UniFi HTTPS port for local mode")
-    parser.add_argument("--auth-mode", choices=["auto", "api_key", "session"], default=None, help="UniFi authentication mode")
     parser.add_argument("--api-key", default=None, help="UniFi local API key")
-    parser.add_argument("--username", default=None, help="UniFi local username")
-    parser.add_argument("--password", default=None, help="UniFi local password")
     parser.add_argument("--site", default=None, help="UniFi site name or identifier")
     parser.add_argument("--route-name", default=None, help="Exact route name to manage")
     parser.add_argument("--destination-field", default=None, help="Destination field path or 'auto'")
@@ -358,28 +352,7 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         run_mode=cast(RunMode, _normalize_run_mode(args, env, file_cfg)),
         host=_first(args.host, _env_value(env, "UNIFI_HOST"), file_cfg.get("host"), DEFAULTS.host),
         port=_parse_int(_first(args.port, _env_value(env, "UNIFI_PORT"), file_cfg.get("port"), DEFAULTS.port), field_name="port"),
-        auth_mode=cast(
-            AuthMode,
-            str(_first(args.auth_mode, _env_value(env, "UNIFI_AUTH_MODE"), file_cfg.get("auth_mode"), DEFAULTS.auth_mode)),
-        ),
-        api_key=_first(
-            args.api_key,
-            _env_secret_first(env, field_name="api_key", key="UNIFI_API_KEY", key_file="UNIFI_API_KEY_FILE"),
-            file_cfg.get("api_key"),
-            DEFAULTS.api_key,
-        ),
-        username=_first(
-            args.username,
-            _env_secret_first(env, field_name="username", key="UNIFI_USERNAME", key_file="UNIFI_USERNAME_FILE"),
-            file_cfg.get("username"),
-            DEFAULTS.username,
-        ),
-        password=_first(
-            args.password,
-            _env_secret_first(env, field_name="password", key="UNIFI_PASSWORD", key_file="UNIFI_PASSWORD_FILE"),
-            file_cfg.get("password"),
-            DEFAULTS.password,
-        ),
+        api_key=_first(args.api_key, _env_value(env, "UNIFI_API_KEY"), file_cfg.get("api_key"), DEFAULTS.api_key),
         site=str(_first(args.site, _env_value(env, "UNIFI_SITE"), file_cfg.get("site"), DEFAULTS.site)),
         route_name=str(_first(args.route_name, _env_value(env, "STOPLIGA_ROUTE_NAME"), file_cfg.get("route_name"), DEFAULTS.route_name)),
         destination_field=_normalize_destination_field(
@@ -524,8 +497,6 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
 
     if config.retries < 1:
         raise ConfigError("retries must be >= 1")
-    if config.auth_mode not in {"auto", "api_key", "session"}:
-        raise ConfigError(f"auth_mode must be auto|api_key|session, not {config.auth_mode!r}")
     if config.request_timeout <= 0:
         raise ConfigError("request_timeout must be > 0")
     if config.max_response_bytes < 1024:
@@ -552,10 +523,6 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("Telegram notifications require both STOPLIGA_TELEGRAM_BOT_TOKEN and STOPLIGA_TELEGRAM_CHAT_ID")
     if validate_connection:
         _validate_unifi_host(config.host or "")
-    if config.auth_mode == "api_key" and not (config.api_key and config.api_key.strip()):
-        raise ConfigError("auth_mode=api_key requires UNIFI_API_KEY")
-    if config.auth_mode == "session" and not (config.username and config.password):
-        raise ConfigError("auth_mode=session requires UNIFI_USERNAME and UNIFI_PASSWORD")
     if config.gotify_url:
         _validate_gotify_url(config.gotify_url, allow_plain_http=config.gotify_allow_plain_http)
     if config.telegram_bot_token:
@@ -564,5 +531,5 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
     _validate_feed_url(config.status_url, field_name="status_url", allow_private_hosts=config.feed_allow_private_hosts)
     _validate_feed_url(config.ip_list_url, field_name="ip_list_url", allow_private_hosts=config.feed_allow_private_hosts)
     if validate_connection:
-        if not config.has_unifi_auth():
-            raise ConfigError("local mode requires UNIFI_HOST and either UNIFI_API_KEY or UNIFI_USERNAME/UNIFI_PASSWORD")
+        if not config.has_local_api_access():
+            raise ConfigError("local mode requires UNIFI_HOST and UNIFI_API_KEY")

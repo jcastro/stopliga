@@ -2,7 +2,7 @@ ARG PYTHON_BASE=python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e
 ARG VERSION=0.1.7
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
-ARG SOURCE_URL=https://github.com/jonatan/stopliga
+ARG SOURCE_URL=https://github.com/jcastro/stopliga
 
 FROM ${PYTHON_BASE} AS builder
 
@@ -28,7 +28,7 @@ FROM ${PYTHON_BASE} AS runtime
 ARG VERSION=0.1.7
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
-ARG SOURCE_URL=https://github.com/jonatan/stopliga
+ARG SOURCE_URL=https://github.com/jcastro/stopliga
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

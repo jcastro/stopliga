@@ -8,6 +8,5 @@ services:
     command: ["--loop"]
     volumes:
       - ./data:/data
-      - ./secrets:/run/secrets:ro
     healthcheck:
       disable: true

@@ -27,6 +27,9 @@ from stopliga.notifier import _safe_notification_url  # noqa: E402
 from stopliga.errors import AuthenticationError, DiscoveryError, NetworkError, PartialUpdateError, ReconciliationRequiredError, StateError, UnsupportedRouteShapeError  # noqa: E402
 
 
+TEST_API_KEY = "test-api-key"
+
+
 def clone(value: Any) -> Any:
     return copy.deepcopy(value)
 
@@ -46,7 +49,6 @@ class FakeState:
     created_route_counter: int = 0
     reject_all_clients_targets: bool = False
     required_api_key: str | None = None
-    session_authenticated: bool = False
     fail_v2_route_list: bool = False
     fail_v2_route_list_after_create: bool = False
     fail_route_update: bool = False
@@ -103,20 +105,12 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
         required_api_key = self.state.required_api_key
         if required_api_key is None:
             return True
-        supplied_api_key = self.headers.get("X-API-Key")
-        return supplied_api_key == required_api_key or self.state.session_authenticated
+        return self.headers.get("X-API-Key") == required_api_key
 
     def do_POST(self) -> None:  # noqa: N802
         self._record()
         parsed = urlparse(self.path)
         path = parsed.path
-
-        if parsed.path == "/api/auth/login":
-            payload = self._read_json()
-            if payload.get("username") and payload.get("password"):
-                self.state.session_authenticated = True
-                self._send_json(200, {"meta": {"rc": "ok"}}, headers={"X-CSRF-Token": "csrf-test-token"})
-                return
 
         if path == f"/proxy/network/v2/api/site/{self.state.network_site_name}/trafficroutes":
             if not self._authorized():
@@ -338,8 +332,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             "run_mode": "once",
             "host": "127.0.0.1",
             "port": 443,
-            "username": "admin",
-            "password": "password",
+            "api_key": TEST_API_KEY,
             "site": "default",
             "route_name": "LaLiga",
             "unifi_verify_tls": False,
@@ -780,7 +773,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertNotIn("_id", route_puts[0])
             self.assertNotIn("computed_status", route_puts[0])
 
-    def test_invalid_api_key_falls_back_to_username_and_password(self) -> None:
+    def test_invalid_api_key_raises_authentication_error(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": False},
             ip_lines=["192.0.2.10"],
@@ -797,33 +790,6 @@ class ServiceIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
             config = self.make_config(
                 state_dir=tmpdir,
-                api_key="wrong-key",
-                port=int(unifi.base_url.rsplit(":", 1)[1]),
-                status_url=f"{feed.base_url}/feed/status.json",
-                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
-            )
-            result = StopLigaService(config).run_once()
-            self.assertTrue(result.changed)
-            self.assertIn("POST /api/auth/login", state.request_log)
-
-    def test_auth_mode_api_key_does_not_fall_back_to_session(self) -> None:
-        state = FakeState(
-            status_payload={"isBlocked": False},
-            ip_lines=["192.0.2.10"],
-            required_api_key="correct-key",
-            route={
-                "_id": "route-1",
-                "name": "LaLiga",
-                "enabled": True,
-                "network_id": "vpn-network-1",
-                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
-                "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
-            },
-        )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
-            config = self.make_config(
-                state_dir=tmpdir,
-                auth_mode="api_key",
                 api_key="wrong-key",
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
                 status_url=f"{feed.base_url}/feed/status.json",
@@ -831,7 +797,6 @@ class ServiceIntegrationTests(unittest.TestCase):
             )
             with self.assertRaises(AuthenticationError):
                 StopLigaService(config).run_once()
-            self.assertNotIn("POST /api/auth/login", state.request_log)
 
     def test_partial_update_records_failed_stage(self) -> None:
         state = FakeState(

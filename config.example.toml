@@ -26,10 +26,7 @@ strict_consistency = true
 [unifi]
 host = "192.168.1.1"
 port = 443
-auth_mode = "session"
-# api_key = "replace-me"
-username = "admin"
-password = "change-me"
+api_key = "replace-me"
 site = "default"
 verify_tls = true
 

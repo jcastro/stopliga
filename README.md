@@ -16,30 +16,26 @@ This project is meant to run as a Docker container.
 ## Requirements
 
 - UniFi gateway or controller reachable on the local network
-- a local UniFi API key, or local username/password
+- a local UniFi API key
 - Docker
 
 ## Quick Start
 
 1. Create `.env` from the example.
-2. Set your UniFi host and credentials.
+2. Set your UniFi host and API key.
 3. Start the container with Docker Compose.
 
 ```bash
 cp .env.example .env
-mkdir -p secrets
 docker compose pull
 docker compose up -d
 ```
 
 ## Recommended `.env`
 
-Use an API key file if possible:
-
 ```dotenv
 UNIFI_HOST=10.0.1.1
-UNIFI_AUTH_MODE=api_key
-UNIFI_API_KEY_FILE=/run/secrets/unifi_api_key
+UNIFI_API_KEY=replace-me
 UNIFI_SITE=default
 UNIFI_VERIFY_TLS=false
 
@@ -58,29 +54,6 @@ STOPLIGA_MAX_RESPONSE_BYTES=2097152
 # STOPLIGA_TELEGRAM_CHAT_ID=123456789
 ```
 
-Create the secret file on the host:
-
-```bash
-mkdir -p secrets
-printf '%s\n' 'YOUR_UNIFI_API_KEY' > secrets/unifi_api_key
-chmod 600 secrets/unifi_api_key
-```
-
-If you prefer username/password:
-
-```dotenv
-UNIFI_HOST=10.0.1.1
-UNIFI_AUTH_MODE=session
-UNIFI_USERNAME=admin
-UNIFI_PASSWORD=replace-me
-UNIFI_SITE=default
-UNIFI_VERIFY_TLS=false
-
-STOPLIGA_RUN_MODE=loop
-STOPLIGA_SYNC_INTERVAL_SECONDS=300
-STOPLIGA_ROUTE_NAME=StopLiga
-```
-
 ## Docker Compose
 
 The repo includes a simple production-oriented compose file:
@@ -96,7 +69,6 @@ services:
     command: ["--loop"]
     volumes:
       - ./data:/data
-      - ./secrets:/run/secrets:ro
     healthcheck:
       disable: true
 ```
@@ -109,7 +81,6 @@ docker run -d \
   --restart unless-stopped \
   --env-file .env \
   -v "$(pwd)/data:/data" \
-  -v "$(pwd)/secrets:/run/secrets:ro" \
   ghcr.io/jcastro/stopliga:latest --loop
 ```
 
@@ -166,9 +137,7 @@ STOPLIGA_TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram_bot_token
 
 ## Notes
 
-- API key auth is preferred.
-- `UNIFI_AUTH_MODE=api_key` is the recommended production mode when you use an API key.
-- `UNIFI_AUTH_MODE=auto` is the compatibility mode that can fall back to username/password if the API key is rejected.
+- Authentication is API-key only. Set `UNIFI_API_KEY` in `.env`.
 - TLS verification is enabled by default.
 - `UNIFI_VERIFY_TLS=false` is only for local setups with self-signed certs.
 - Telegram notifications always verify TLS.

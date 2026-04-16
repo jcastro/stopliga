@@ -391,7 +391,7 @@ class StopLigaService:
 
     def _run_once(self, feed_snapshot: FeedSnapshot) -> SyncResult:
         client = UniFiClient(self.config)
-        client.login()
+        client.authenticate()
         site_context = client.resolve_site_context()
         created = False
         previous_guard = self._load_bootstrap_guard()

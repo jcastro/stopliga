@@ -28,8 +28,7 @@ run_mode = "once"
 
 [unifi]
 host = "10.0.0.1"
-username = "file-user"
-password = "file-pass"
+api_key = "file-api-key"
 site = "default"
                 """.strip(),
                 encoding="utf-8",
@@ -40,13 +39,12 @@ site = "default"
                 args,
                 {
                     "UNIFI_HOST": "10.0.0.2",
-                    "UNIFI_USERNAME": "env-user",
-                    "UNIFI_PASSWORD": "env-pass",
+                    "UNIFI_API_KEY": "env-api-key",
                 },
             )
             self.assertEqual(config.route_name, "FromCLI")
             self.assertEqual(config.host, "10.0.0.2")
-            self.assertEqual(config.username, "env-user")
+            self.assertEqual(config.api_key, "env-api-key")
 
     def test_healthcheck_config_can_load_without_unifi_credentials(self) -> None:
         parser = build_parser()
@@ -54,7 +52,7 @@ site = "default"
         config = load_config(args, {}, validate=False)
         self.assertEqual(config.run_mode, "once")
 
-    def test_api_key_can_replace_username_and_password(self) -> None:
+    def test_api_key_is_loaded_for_local_mode(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
         config = load_config(
@@ -66,10 +64,8 @@ site = "default"
         )
         self.assertEqual(config.host, "10.0.0.2")
         self.assertEqual(config.api_key, "test-api-key")
-        self.assertIsNone(config.username)
-        self.assertIsNone(config.password)
 
-    def test_auth_mode_session_requires_username_and_password(self) -> None:
+    def test_local_mode_requires_api_key(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
         with self.assertRaises(ConfigError):
@@ -77,22 +73,6 @@ site = "default"
                 args,
                 {
                     "UNIFI_HOST": "10.0.0.2",
-                    "UNIFI_AUTH_MODE": "session",
-                    "UNIFI_API_KEY": "test-api-key",
-                },
-            )
-
-    def test_auth_mode_api_key_requires_api_key(self) -> None:
-        parser = build_parser()
-        args = parser.parse_args([])
-        with self.assertRaises(ConfigError):
-            load_config(
-                args,
-                {
-                    "UNIFI_HOST": "10.0.0.2",
-                    "UNIFI_AUTH_MODE": "api_key",
-                    "UNIFI_USERNAME": "user",
-                    "UNIFI_PASSWORD": "pass",
                 },
             )
 
@@ -104,8 +84,7 @@ site = "default"
                 args,
                 {
                     "UNIFI_HOST": "10.0.0.2",
-                    "UNIFI_USERNAME": "env-user",
-                    "UNIFI_PASSWORD": "env-pass",
+                    "UNIFI_API_KEY": "env-api-key",
                     "STOPLIGA_VPN_NAME": "Mullvad DE",
                 },
             )
@@ -138,43 +117,6 @@ site = "default"
         )
         self.assertEqual(config.status_url, "http://127.0.0.1/status.json")
         self.assertEqual(config.ip_list_url, "http://localhost/ip_list.txt")
-
-    def test_secret_files_can_provide_unifi_credentials(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            api_key_file = Path(tmpdir) / "api_key"
-            password_file = Path(tmpdir) / "password"
-            api_key_file.write_text("secret-api-key\n", encoding="utf-8")
-            password_file.write_text("secret-password\n", encoding="utf-8")
-            parser = build_parser()
-            args = parser.parse_args([])
-            config = load_config(
-                args,
-                {
-                    "UNIFI_HOST": "10.0.0.2",
-                    "UNIFI_USERNAME": "env-user",
-                    "UNIFI_API_KEY_FILE": str(api_key_file),
-                    "UNIFI_PASSWORD_FILE": str(password_file),
-                },
-            )
-            self.assertEqual(config.api_key, "secret-api-key")
-            self.assertEqual(config.username, "env-user")
-            self.assertEqual(config.password, "secret-password")
-
-    def test_direct_secret_and_secret_file_conflict_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            api_key_file = Path(tmpdir) / "api_key"
-            api_key_file.write_text("secret-api-key\n", encoding="utf-8")
-            parser = build_parser()
-            args = parser.parse_args([])
-            with self.assertRaises(ConfigError):
-                load_config(
-                    args,
-                    {
-                        "UNIFI_HOST": "10.0.0.2",
-                        "UNIFI_API_KEY": "env-api-key",
-                        "UNIFI_API_KEY_FILE": str(api_key_file),
-                    },
-                )
 
     def test_partial_gotify_configuration_is_rejected(self) -> None:
         parser = build_parser()

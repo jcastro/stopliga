@@ -56,7 +56,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         service = StopLigaService(config)
         if config.webui_enabled:
             import threading
-            from .webui.server import start_server
+            from webui.server import start_server
             webui_thread = threading.Thread(
                 target=start_server,
                 args=(config.state_file, config.webui_host, config.webui_port),

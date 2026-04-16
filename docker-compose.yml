@@ -7,5 +7,8 @@ services:
       - .env
     volumes:
       - ./data:/data
+    # Uncomment to enable the web UI (also set STOPLIGA_WEBUI_ENABLED=true in .env)
+    # ports:
+    #   - "8080:8080"
     healthcheck:
       disable: true

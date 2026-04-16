@@ -293,3 +293,31 @@ site = "default"
                     "STOPLIGA_MAX_RESPONSE_BYTES": "512",
                 },
             )
+
+    def test_webui_config_defaults_to_disabled(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {"UNIFI_HOST": "10.0.0.1", "UNIFI_API_KEY": "test-key"},
+        )
+        self.assertFalse(config.webui_enabled)
+        self.assertEqual(config.webui_port, 8080)
+        self.assertEqual(config.webui_host, "0.0.0.0")
+
+    def test_webui_config_loads_from_env(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.1",
+                "UNIFI_API_KEY": "test-key",
+                "STOPLIGA_WEBUI_ENABLED": "true",
+                "STOPLIGA_WEBUI_PORT": "9090",
+                "STOPLIGA_WEBUI_HOST": "127.0.0.1",
+            },
+        )
+        self.assertTrue(config.webui_enabled)
+        self.assertEqual(config.webui_port, 9090)
+        self.assertEqual(config.webui_host, "127.0.0.1")

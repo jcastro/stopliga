@@ -63,6 +63,9 @@ class Config:
     gotify_allow_plain_http: bool = False
     telegram_verify_tls: bool | None = None
     telegram_ca_file: Path | None = None
+    webui_enabled: bool = False
+    webui_port: int = 8080
+    webui_host: str = "0.0.0.0"
 
     def has_local_api_access(self) -> bool:
         return bool(self.host and self.api_key and self.api_key.strip())

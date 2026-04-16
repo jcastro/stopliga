@@ -487,6 +487,15 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             else None
         ),
         telegram_ca_file=_parse_path(value, field_name="telegram_ca_file") if (value := _first(_env_value(env, "STOPLIGA_TELEGRAM_CA_FILE"), file_cfg.get("telegram_ca_file"))) else None,
+        webui_enabled=_parse_bool(
+            _first(_env_value(env, "STOPLIGA_WEBUI_ENABLED"), file_cfg.get("webui_enabled"), DEFAULTS.webui_enabled),
+            field_name="webui_enabled",
+        ),
+        webui_port=_parse_int(
+            _first(_env_value(env, "STOPLIGA_WEBUI_PORT"), file_cfg.get("webui_port"), DEFAULTS.webui_port),
+            field_name="webui_port",
+        ),
+        webui_host=str(_first(_env_value(env, "STOPLIGA_WEBUI_HOST"), file_cfg.get("webui_host"), DEFAULTS.webui_host)),
     )
 
     validate_config(config, validate_connection=validate and not args.healthcheck)

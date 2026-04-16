@@ -23,6 +23,12 @@ RUN pip install --upgrade pip==26.0.1 setuptools==82.0.1 wheel==0.46.3 \
     && pip install .
 
 
+FROM builder AS test
+COPY tests /build/tests
+RUN pip install pytest
+RUN python -m pytest tests/ -v
+
+
 FROM ${PYTHON_BASE} AS runtime
 
 ARG VERSION=0.1.10
@@ -37,6 +43,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOME="/home/stopliga" \
     STOPLIGA_STATE_FILE=/data/state.json \
     STOPLIGA_LOCK_FILE=/data/stopliga.lock
+
+EXPOSE 8080
 
 LABEL org.opencontainers.image.title="StopLiga" \
       org.opencontainers.image.description="Synchronize a UniFi policy-based route with a public GitHub IP feed." \

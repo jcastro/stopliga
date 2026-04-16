@@ -22,7 +22,6 @@ venv/
 *.swo
 dist/
 build/
-tests/
 .github/
 .DS_Store
 data/

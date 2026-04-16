@@ -26,7 +26,6 @@ class Config:
     ip_list_url: str = (
         "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
     )
-    enable_when_blocked: bool = True
     unifi_verify_tls: bool = True
     unifi_ca_file: Path | None = None
     feed_verify_tls: bool = True

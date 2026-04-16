@@ -174,7 +174,6 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "destination_field": app.get("destination_field"),
         "status_url": feeds.get("status_url"),
         "ip_list_url": feeds.get("ip_list_url"),
-        "enable_when_blocked": app.get("enable_when_blocked"),
         "unifi_verify_tls": unifi.get("verify_tls"),
         "unifi_ca_file": unifi.get("ca_file"),
         "feed_verify_tls": feeds.get("verify_tls"),
@@ -256,7 +255,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"], default=None)
     parser.add_argument("--verbose", action="store_true", help="Shortcut for --log-level DEBUG")
-    parser.add_argument("--disable-when-blocked", action="store_true", default=None)
     parser.add_argument("--gotify-url", default=None, help="Gotify server URL")
     parser.add_argument("--gotify-token", default=None, help="Gotify application token")
     parser.add_argument("--gotify-priority", type=int, default=None, help="Gotify priority")
@@ -334,13 +332,6 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
     config_path = Path(config_path_raw).expanduser() if config_path_raw else None
     file_cfg = load_config_file(config_path)
 
-    enable_when_blocked = not bool(args.disable_when_blocked)
-    if args.disable_when_blocked is None:
-        enable_when_blocked = _parse_bool(
-            _first(_env_value(env, "STOPLIGA_ENABLE_WHEN_BLOCKED"), file_cfg.get("enable_when_blocked"), DEFAULTS.enable_when_blocked),
-            field_name="enable_when_blocked",
-        )
-
     log_level = "DEBUG" if args.verbose else _first(
         args.log_level,
         _env_value(env, "STOPLIGA_LOG_LEVEL"),
@@ -360,7 +351,6 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         ),
         status_url=str(_first(args.status_url, _env_value(env, "STOPLIGA_STATUS_URL"), file_cfg.get("status_url"), DEFAULTS.status_url)),
         ip_list_url=str(_first(args.ip_list_url, _env_value(env, "STOPLIGA_IP_LIST_URL"), file_cfg.get("ip_list_url"), DEFAULTS.ip_list_url)),
-        enable_when_blocked=enable_when_blocked,
         unifi_verify_tls=_parse_bool(
             _first(args.unifi_verify_tls, _env_value(env, "UNIFI_VERIFY_TLS"), file_cfg.get("unifi_verify_tls"), DEFAULTS.unifi_verify_tls),
             field_name="unifi_verify_tls",

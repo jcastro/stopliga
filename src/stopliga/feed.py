@@ -293,7 +293,7 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
             f"Validated destination count {len(destinations)} exceeds configured safety ceiling {config.max_destinations}"
         )
 
-    desired_enabled = is_blocked if config.enable_when_blocked else not is_blocked
+    desired_enabled = is_blocked
     snapshot = FeedSnapshot(
         is_blocked=is_blocked,
         desired_enabled=desired_enabled,

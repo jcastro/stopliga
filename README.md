@@ -55,6 +55,8 @@ services:
     command: ["--loop"]
     volumes:
       - ./data:/data
+    healthcheck:
+      disable: true
 ```
 
 Useful commands:

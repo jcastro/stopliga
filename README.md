@@ -1,6 +1,6 @@
 # StopLiga
 
-StopLiga keeps a UniFi policy-based route named `StopLiga` in sync with the status and IP list published by `r4y7s/laliga-ip-list`.
+StopLiga keeps a UniFi policy-based route named `StopLiga` in sync with the status and IP list published by [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list).
 
 This repo is meant to be run with Docker.
 
@@ -90,3 +90,8 @@ docker run -d \
   -v "$(pwd)/data:/data" \
   ghcr.io/jcastro/stopliga:latest --loop
 ```
+
+## Sources
+
+- Data source: [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list)
+- Thanks to the maintainers of that repository for publishing and keeping the feed updated

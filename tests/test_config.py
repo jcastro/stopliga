@@ -65,6 +65,89 @@ site = "default"
         self.assertEqual(config.host, "10.0.0.2")
         self.assertEqual(config.api_key, "test-api-key")
 
+    def test_router_type_defaults_to_unifi(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+            },
+        )
+        self.assertEqual(config.router_type, "unifi")
+
+    def test_invalid_router_type_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "STOPLIGA_ROUTER_TYPE": "openwrt",
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                },
+            )
+
+    def test_omada_mode_loads_required_settings(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "STOPLIGA_ROUTER_TYPE": "omada",
+                "STOPLIGA_OMADA_BASE_URL": "https://controller.example/openapi",
+                "STOPLIGA_OMADA_CLIENT_ID": "client-id",
+                "STOPLIGA_OMADA_CLIENT_SECRET": "client-secret",
+                "STOPLIGA_OMADA_OMADAC_ID": "omadac-id",
+                "STOPLIGA_OMADA_SITE": "Madrid",
+                "STOPLIGA_OMADA_TARGET_TYPE": "vpn",
+                "STOPLIGA_OMADA_TARGET": "WG-Madrid",
+                "STOPLIGA_OMADA_SOURCE_NETWORKS": "LAN,IoT",
+            },
+        )
+        self.assertEqual(config.router_type, "omada")
+        self.assertEqual(config.omada_base_url, "https://controller.example")
+        self.assertEqual(config.site, "Madrid")
+        self.assertEqual(config.omada_target_type, "vpn")
+        self.assertEqual(config.omada_target, "WG-Madrid")
+        self.assertEqual(config.omada_source_networks, ("LAN", "IoT"))
+
+    def test_omada_mode_requires_target_type(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "STOPLIGA_ROUTER_TYPE": "omada",
+                    "STOPLIGA_OMADA_BASE_URL": "https://controller.example",
+                    "STOPLIGA_OMADA_CLIENT_ID": "client-id",
+                    "STOPLIGA_OMADA_CLIENT_SECRET": "client-secret",
+                    "STOPLIGA_OMADA_OMADAC_ID": "omadac-id",
+                    "STOPLIGA_OMADA_TARGET": "WAN1",
+                },
+            )
+
+    def test_omada_route_name_length_is_validated(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "STOPLIGA_ROUTER_TYPE": "omada",
+                    "STOPLIGA_OMADA_BASE_URL": "https://controller.example",
+                    "STOPLIGA_OMADA_CLIENT_ID": "client-id",
+                    "STOPLIGA_OMADA_CLIENT_SECRET": "client-secret",
+                    "STOPLIGA_OMADA_OMADAC_ID": "omadac-id",
+                    "STOPLIGA_OMADA_TARGET_TYPE": "vpn",
+                    "STOPLIGA_OMADA_TARGET": "WG-Madrid",
+                    "STOPLIGA_ROUTE_NAME": "X" * 65,
+                },
+            )
+
     def test_local_mode_requires_api_key(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
@@ -118,7 +201,21 @@ site = "default"
         self.assertEqual(config.status_url, "http://127.0.0.1/status.json")
         self.assertEqual(config.ip_list_url, "http://localhost/ip_list.txt")
 
-    def test_opnsense_backend_loads_without_unifi_credentials(self) -> None:
+    def test_dns_status_feed_urls_are_allowed(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+                "STOPLIGA_STATUS_URL": "dns://blocked.dns.hayahora.futbol",
+                "STOPLIGA_IP_LIST_URL": "https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
+            },
+        )
+        self.assertEqual(config.status_url, "dns://blocked.dns.hayahora.futbol")
+
+    def test_legacy_firewall_backend_env_maps_to_opnsense_router_type(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
         config = load_config(
@@ -131,6 +228,7 @@ site = "default"
             },
         )
         self.assertEqual(config.firewall_backend, "opnsense")
+        self.assertEqual(config.router_type, "opnsense")
         self.assertEqual(config.opnsense_host, "10.0.0.3")
         self.assertEqual(config.opnsense_api_key, "test-opnsense-key")
         self.assertEqual(config.opnsense_api_secret, "test-opnsense-secret")
@@ -187,21 +285,6 @@ site = "default"
                 {
                     "UNIFI_HOST": "10.0.0.2",
                     "UNIFI_API_KEY": "test-api-key",
-                    "STOPLIGA_TELEGRAM_TOPIC_ID": "42",
-                },
-            )
-
-    def test_telegram_topic_requires_group_target(self) -> None:
-        parser = build_parser()
-        args = parser.parse_args([])
-        with self.assertRaises(ConfigError):
-            load_config(
-                args,
-                {
-                    "UNIFI_HOST": "10.0.0.2",
-                    "UNIFI_API_KEY": "test-api-key",
-                    "STOPLIGA_TELEGRAM_BOT_TOKEN": "123456:test",
-                    "STOPLIGA_TELEGRAM_CHAT_ID": "1234",
                     "STOPLIGA_TELEGRAM_TOPIC_ID": "42",
                 },
             )

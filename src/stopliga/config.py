@@ -7,11 +7,11 @@ import ipaddress
 import os
 import tomllib
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, cast, get_args
 from urllib.parse import urlparse
 
 from .errors import ConfigError
-from .models import Config, FirewallBackend, InvalidEntryPolicy, RunMode
+from .models import Config, InvalidEntryPolicy, LegacyFirewallBackend, OmadaTargetType, RouterType, RunMode
 
 
 DEFAULTS = Config()
@@ -60,13 +60,17 @@ def _validate_host(host: str, *, field_name: str) -> None:
     if candidate != host:
         raise ConfigError(f"{field_name} must not contain leading or trailing whitespace")
     if "://" in candidate or "/" in candidate or "@" in candidate or "?" in candidate or "#" in candidate:
-        raise ConfigError(f"{field_name} must be a hostname or IP address without scheme, path or credentials")
+        raise ConfigError(
+            f"{field_name} must be a hostname or IP address without scheme, path or credentials"
+        )
     if candidate.startswith("[") and candidate.endswith("]"):
         inner = candidate[1:-1]
         try:
             ipaddress.IPv6Address(inner)
         except ipaddress.AddressValueError as exc:
-            raise ConfigError(f"{field_name} contains an invalid bracketed IPv6 address: {candidate!r}") from exc
+            raise ConfigError(
+                f"{field_name} contains an invalid bracketed IPv6 address: {candidate!r}"
+            ) from exc
         return
     try:
         ipaddress.ip_address(candidate)
@@ -99,8 +103,24 @@ def _is_private_hostname(hostname: str) -> bool:
     return bool(ip_value.is_private or ip_value.is_loopback or ip_value.is_link_local or ip_value.is_reserved)
 
 
-def _validate_feed_url(url: str, *, field_name: str, allow_private_hosts: bool) -> None:
+def _validate_feed_url(
+    url: str,
+    *,
+    field_name: str,
+    allow_private_hosts: bool,
+    allow_dns: bool = False,
+) -> None:
     parsed = urlparse(url)
+    if parsed.scheme == "dns":
+        if not allow_dns:
+            raise ConfigError(f"{field_name} must use http or https, not {parsed.scheme!r}")
+        if not parsed.hostname:
+            raise ConfigError(f"{field_name} must include a hostname")
+        if parsed.username or parsed.password:
+            raise ConfigError(f"{field_name} must not embed credentials")
+        if parsed.port is not None or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            raise ConfigError(f"{field_name} DNS URLs must look like dns://hostname")
+        return
     if parsed.scheme not in {"https", "http"}:
         raise ConfigError(f"{field_name} must use http or https, not {parsed.scheme!r}")
     if not parsed.hostname:
@@ -128,6 +148,29 @@ def _validate_gotify_url(url: str, *, allow_plain_http: bool) -> None:
     parsed = urlparse(url)
     if parsed.scheme == "http" and not allow_plain_http:
         raise ConfigError("gotify_url must use https unless STOPLIGA_GOTIFY_ALLOW_PLAIN_HTTP=true")
+
+
+def _validate_api_base_url(url: str, *, field_name: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"https", "http"}:
+        raise ConfigError(f"{field_name} must use http or https, not {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ConfigError(f"{field_name} must include a hostname")
+    if parsed.username or parsed.password:
+        raise ConfigError(f"{field_name} must not embed credentials")
+    if parsed.query or parsed.fragment:
+        raise ConfigError(f"{field_name} must not include query or fragment components")
+
+
+def _normalize_omada_base_url(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError("omada_base_url must be a non-empty URL")
+    normalized = value.strip().rstrip("/")
+    if normalized.endswith("/openapi"):
+        normalized = normalized[:-8]
+    return normalized
 
 
 def _parse_csv_list(value: Any, *, field_name: str) -> tuple[str, ...]:
@@ -158,22 +201,40 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
 
     app = raw.get("app", {})
     unifi = raw.get("unifi", {})
+    omada = raw.get("omada", {})
     opnsense = raw.get("opnsense", {})
     feeds = raw.get("feeds", {})
     bootstrap = raw.get("bootstrap", {})
     notifications = raw.get("notifications", {})
-    if not all(isinstance(section, dict) for section in (app, unifi, opnsense, feeds, bootstrap, notifications)):
-        raise ConfigError("Config sections app/unifi/opnsense/feeds/bootstrap/notifications must be TOML tables")
+    if not all(
+        isinstance(section, dict)
+        for section in (app, unifi, omada, opnsense, feeds, bootstrap, notifications)
+    ):
+        raise ConfigError(
+            "Config sections app/unifi/omada/opnsense/feeds/bootstrap/notifications must be TOML tables"
+        )
 
     return {
         "run_mode": app.get("run_mode"),
+        "router_type": app.get("router_type"),
         "firewall_backend": app.get("firewall_backend"),
         "host": unifi.get("host"),
         "port": unifi.get("port"),
         "api_key": unifi.get("api_key"),
-        "site": unifi.get("site"),
+        "unifi_site": unifi.get("site"),
+        "omada_site": omada.get("site"),
         "route_name": app.get("route_name"),
         "destination_field": app.get("destination_field"),
+        "omada_base_url": omada.get("base_url"),
+        "omada_client_id": omada.get("client_id"),
+        "omada_client_secret": omada.get("client_secret"),
+        "omada_omadac_id": omada.get("omadac_id"),
+        "omada_target_type": omada.get("target_type"),
+        "omada_target": omada.get("target"),
+        "omada_source_networks": omada.get("source_networks"),
+        "omada_verify_tls": omada.get("verify_tls"),
+        "omada_ca_file": omada.get("ca_file"),
+        "omada_group_size": omada.get("group_size"),
         "status_url": feeds.get("status_url"),
         "ip_list_url": feeds.get("ip_list_url"),
         "unifi_verify_tls": unifi.get("verify_tls"),
@@ -227,21 +288,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="stopliga",
-        description="Synchronize a UniFi policy-based route with a public GitHub IP feed.",
+        description="Synchronize a managed router route with a public GitHub IP feed.",
     )
     parser.add_argument("--config", default=None, help="Optional TOML config file")
     parser.add_argument("--healthcheck", action="store_true", help="Validate recent state file freshness")
+    parser.add_argument("--router-type", default=None, help="Router driver to use")
     parser.add_argument("--host", default=None, help="UniFi console host or IP for local mode")
     parser.add_argument("--port", type=int, default=None, help="UniFi HTTPS port for local mode")
     parser.add_argument("--api-key", default=None, help="UniFi local API key")
     parser.add_argument("--site", default=None, help="UniFi site name or identifier")
     parser.add_argument("--route-name", default=None, help="Exact route name to manage or create")
     parser.add_argument("--destination-field", default=None, help="Destination field path or 'auto'")
-    parser.add_argument("--status-url", default=None, help="Status JSON URL")
+    parser.add_argument("--omada-base-url", default=None, help="Omada Controller interface access URL")
+    parser.add_argument("--omada-client-id", default=None, help="Omada Open API client ID")
+    parser.add_argument("--omada-client-secret", default=None, help="Omada Open API client secret")
+    parser.add_argument("--omadac-id", dest="omada_omadac_id", default=None, help="Omada cloud/controller ID")
+    parser.add_argument("--omada-target-type", choices=["wan", "vpn"], default=None, help="Omada egress target kind")
+    parser.add_argument("--omada-target", default=None, help="Omada WAN or VPN name/ID to route through")
+    parser.add_argument("--omada-source-networks", default=None, help="Comma-separated Omada LAN network names or IDs")
+    parser.add_argument("--omada-group-size", type=int, default=None, help="Maximum IPv4 subnets per managed Omada IP Group")
+    parser.add_argument("--status-url", default=None, help="Status feed URL (http/https or dns://hostname)")
     parser.add_argument("--ip-list-url", default=None, help="IP list TXT URL")
     parser.add_argument("--state-file", default=None, help="State file path")
     parser.add_argument("--lock-file", default=None, help="Lock file path")
     parser.add_argument("--ca-file", dest="unifi_ca_file", default=None, help="CA bundle for UniFi TLS")
+    parser.add_argument("--omada-ca-file", default=None, help="CA bundle for Omada TLS")
     parser.add_argument("--vpn-name", default=None, help="Exact VPN client network name for automatic route creation")
     parser.add_argument("--targets", default=None, help="Comma-separated client names or MACs for automatic route creation")
     parser.add_argument(
@@ -282,6 +353,10 @@ def build_parser() -> argparse.ArgumentParser:
     tls_group = parser.add_mutually_exclusive_group()
     tls_group.add_argument("--verify-tls", dest="unifi_verify_tls", action="store_true", default=None)
     tls_group.add_argument("--insecure-skip-verify", dest="unifi_verify_tls", action="store_false", default=None)
+
+    omada_tls_group = parser.add_mutually_exclusive_group()
+    omada_tls_group.add_argument("--omada-verify-tls", dest="omada_verify_tls", action="store_true", default=None)
+    omada_tls_group.add_argument("--omada-insecure-skip-verify", dest="omada_verify_tls", action="store_false", default=None)
     return parser
 
 
@@ -343,6 +418,21 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
     config_path_raw = _first(args.config, _env_value(env, "STOPLIGA_CONFIG_FILE"))
     config_path = Path(config_path_raw).expanduser() if config_path_raw else None
     file_cfg = load_config_file(config_path)
+    router_type = cast(
+        RouterType,
+        str(
+            _first(
+                args.router_type,
+                _env_value(env, "STOPLIGA_ROUTER_TYPE"),
+                _env_value(env, "STOPLIGA_FIREWALL_BACKEND"),
+                file_cfg.get("router_type"),
+                file_cfg.get("firewall_backend"),
+                DEFAULTS.router_type,
+            )
+        ),
+    )
+    site_env_key = "STOPLIGA_OMADA_SITE" if router_type == "omada" else "UNIFI_SITE"
+    site_file_key = "omada_site" if router_type == "omada" else "unifi_site"
 
     log_level = "DEBUG" if args.verbose else _first(
         args.log_level,
@@ -351,20 +441,95 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         DEFAULTS.log_level,
     )
 
-    firewall_backend_raw = str(_first(_env_value(env, "STOPLIGA_FIREWALL_BACKEND"), file_cfg.get("firewall_backend"), DEFAULTS.firewall_backend))
-    if firewall_backend_raw not in {"unifi", "opnsense"}:
-        raise ConfigError(f"STOPLIGA_FIREWALL_BACKEND must be 'unifi' or 'opnsense', not {firewall_backend_raw!r}")
-
     config = Config(
         run_mode=cast(RunMode, _normalize_run_mode(args, env, file_cfg)),
-        firewall_backend=cast(FirewallBackend, firewall_backend_raw),
+        router_type=router_type,
+        firewall_backend=cast(
+            LegacyFirewallBackend | None,
+            _first(
+                _env_value(env, "STOPLIGA_FIREWALL_BACKEND"),
+                file_cfg.get("firewall_backend"),
+                DEFAULTS.firewall_backend,
+            ),
+        ),
         host=_first(args.host, _env_value(env, "UNIFI_HOST"), file_cfg.get("host"), DEFAULTS.host),
         port=_parse_int(_first(args.port, _env_value(env, "UNIFI_PORT"), file_cfg.get("port"), DEFAULTS.port), field_name="port"),
         api_key=_first(args.api_key, _env_value(env, "UNIFI_API_KEY"), file_cfg.get("api_key"), DEFAULTS.api_key),
-        site=str(_first(args.site, _env_value(env, "UNIFI_SITE"), file_cfg.get("site"), DEFAULTS.site)),
+        site=str(_first(args.site, _env_value(env, site_env_key), file_cfg.get(site_file_key), DEFAULTS.site)),
         route_name=str(_first(args.route_name, _env_value(env, "STOPLIGA_ROUTE_NAME"), file_cfg.get("route_name"), DEFAULTS.route_name)),
         destination_field=_normalize_destination_field(
             _first(args.destination_field, _env_value(env, "STOPLIGA_DESTINATION_FIELD"), file_cfg.get("destination_field"), DEFAULTS.destination_field)
+        ),
+        omada_base_url=_normalize_omada_base_url(
+            _first(args.omada_base_url, _env_value(env, "STOPLIGA_OMADA_BASE_URL"), file_cfg.get("omada_base_url"), DEFAULTS.omada_base_url)
+        ),
+        omada_client_id=_first(
+            args.omada_client_id,
+            _env_value(env, "STOPLIGA_OMADA_CLIENT_ID"),
+            file_cfg.get("omada_client_id"),
+            DEFAULTS.omada_client_id,
+        ),
+        omada_client_secret=_first(
+            args.omada_client_secret,
+            _env_secret_first(
+                env,
+                field_name="omada_client_secret",
+                key="STOPLIGA_OMADA_CLIENT_SECRET",
+                key_file="STOPLIGA_OMADA_CLIENT_SECRET_FILE",
+            ),
+            file_cfg.get("omada_client_secret"),
+            DEFAULTS.omada_client_secret,
+        ),
+        omada_omadac_id=_first(
+            args.omada_omadac_id,
+            _env_value(env, "STOPLIGA_OMADA_OMADAC_ID"),
+            file_cfg.get("omada_omadac_id"),
+            DEFAULTS.omada_omadac_id,
+        ),
+        omada_target_type=cast(
+            OmadaTargetType | None,
+            _first(
+                args.omada_target_type,
+                _env_value(env, "STOPLIGA_OMADA_TARGET_TYPE"),
+                file_cfg.get("omada_target_type"),
+                DEFAULTS.omada_target_type,
+            ),
+        ),
+        omada_target=_first(
+            args.omada_target,
+            _env_value(env, "STOPLIGA_OMADA_TARGET"),
+            file_cfg.get("omada_target"),
+            DEFAULTS.omada_target,
+        ),
+        omada_source_networks=_parse_csv_list(
+            _first(
+                args.omada_source_networks,
+                _env_value(env, "STOPLIGA_OMADA_SOURCE_NETWORKS"),
+                file_cfg.get("omada_source_networks"),
+                DEFAULTS.omada_source_networks,
+            ),
+            field_name="omada_source_networks",
+        ),
+        omada_verify_tls=_parse_bool(
+            _first(
+                args.omada_verify_tls,
+                _env_value(env, "STOPLIGA_OMADA_VERIFY_TLS"),
+                file_cfg.get("omada_verify_tls"),
+                DEFAULTS.omada_verify_tls,
+            ),
+            field_name="omada_verify_tls",
+        ),
+        omada_ca_file=_parse_path(value, field_name="omada_ca_file")
+        if (value := _first(args.omada_ca_file, _env_value(env, "STOPLIGA_OMADA_CA_FILE"), file_cfg.get("omada_ca_file")))
+        else None,
+        omada_group_size=_parse_int(
+            _first(
+                args.omada_group_size,
+                _env_value(env, "STOPLIGA_OMADA_GROUP_SIZE"),
+                file_cfg.get("omada_group_size"),
+                DEFAULTS.omada_group_size,
+            ),
+            field_name="omada_group_size",
         ),
         status_url=str(_first(args.status_url, _env_value(env, "STOPLIGA_STATUS_URL"), file_cfg.get("status_url"), DEFAULTS.status_url)),
         ip_list_url=str(_first(args.ip_list_url, _env_value(env, "STOPLIGA_IP_LIST_URL"), file_cfg.get("ip_list_url"), DEFAULTS.ip_list_url)),
@@ -375,21 +540,41 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         unifi_ca_file=_parse_path(value, field_name="unifi_ca_file") if (value := _first(args.unifi_ca_file, _env_value(env, "UNIFI_CA_FILE"), file_cfg.get("unifi_ca_file"))) else None,
         opnsense_host=_first(_env_value(env, "OPNSENSE_HOST"), file_cfg.get("opnsense_host"), DEFAULTS.opnsense_host),
         opnsense_api_key=_first(
-            _env_secret_first(env, field_name="opnsense_api_key", key="OPNSENSE_API_KEY", key_file="OPNSENSE_API_KEY_FILE"),
+            _env_secret_first(
+                env,
+                field_name="opnsense_api_key",
+                key="OPNSENSE_API_KEY",
+                key_file="OPNSENSE_API_KEY_FILE",
+            ),
             file_cfg.get("opnsense_api_key"),
             DEFAULTS.opnsense_api_key,
         ),
         opnsense_api_secret=_first(
-            _env_secret_first(env, field_name="opnsense_api_secret", key="OPNSENSE_API_SECRET", key_file="OPNSENSE_API_SECRET_FILE"),
+            _env_secret_first(
+                env,
+                field_name="opnsense_api_secret",
+                key="OPNSENSE_API_SECRET",
+                key_file="OPNSENSE_API_SECRET_FILE",
+            ),
             file_cfg.get("opnsense_api_secret"),
             DEFAULTS.opnsense_api_secret,
         ),
         opnsense_verify_tls=_parse_bool(
-            _first(_env_value(env, "OPNSENSE_VERIFY_TLS"), file_cfg.get("opnsense_verify_tls"), DEFAULTS.opnsense_verify_tls),
+            _first(
+                _env_value(env, "OPNSENSE_VERIFY_TLS"),
+                file_cfg.get("opnsense_verify_tls"),
+                DEFAULTS.opnsense_verify_tls,
+            ),
             field_name="opnsense_verify_tls",
         ),
-        opnsense_ca_file=_parse_path(value, field_name="opnsense_ca_file") if (value := _first(_env_value(env, "OPNSENSE_CA_FILE"), file_cfg.get("opnsense_ca_file"))) else None,
-        opnsense_alias_name=_first(_env_value(env, "OPNSENSE_ALIAS_NAME"), file_cfg.get("opnsense_alias_name"), DEFAULTS.opnsense_alias_name),
+        opnsense_ca_file=_parse_path(value, field_name="opnsense_ca_file")
+        if (value := _first(_env_value(env, "OPNSENSE_CA_FILE"), file_cfg.get("opnsense_ca_file")))
+        else None,
+        opnsense_alias_name=_first(
+            _env_value(env, "OPNSENSE_ALIAS_NAME"),
+            file_cfg.get("opnsense_alias_name"),
+            DEFAULTS.opnsense_alias_name,
+        ),
         feed_verify_tls=_parse_bool(
             _first(_env_value(env, "STOPLIGA_FEED_VERIFY_TLS"), file_cfg.get("feed_verify_tls"), DEFAULTS.feed_verify_tls),
             field_name="feed_verify_tls",
@@ -538,6 +723,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("loop mode requires interval_seconds > 0")
     if config.max_destinations < 1:
         raise ConfigError("max_destinations must be >= 1")
+    if config.omada_group_size < 1:
+        raise ConfigError("omada_group_size must be >= 1")
     if config.notification_retries < 1:
         raise ConfigError("notification_retries must be >= 1")
     if not config.route_name.strip():
@@ -546,8 +733,14 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("site must not be empty")
     if config.invalid_entry_policy not in {"fail", "ignore"}:
         raise ConfigError(f"invalid_entry_policy must be fail|ignore, not {config.invalid_entry_policy!r}")
-    if config.firewall_backend == "unifi" and bool(config.vpn_name) != bool(config.target_clients):
+    if config.router_type not in get_args(RouterType):
+        raise ConfigError(
+            f"router_type must be one of {', '.join(get_args(RouterType))}, not {config.router_type!r}"
+        )
+    if bool(config.vpn_name) != bool(config.target_clients):
         raise ConfigError("Automatic route creation requires both STOPLIGA_VPN_NAME and STOPLIGA_TARGETS")
+    if config.router_type != "unifi" and (config.vpn_name or config.target_clients):
+        raise ConfigError("STOPLIGA_VPN_NAME and STOPLIGA_TARGETS are UniFi-only bootstrap options")
     if bool(config.gotify_url) != bool(config.gotify_token):
         raise ConfigError("Gotify notifications require both STOPLIGA_GOTIFY_URL and STOPLIGA_GOTIFY_TOKEN")
     if config.telegram_chat_id and config.telegram_group_id:
@@ -557,25 +750,51 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError(
             "Telegram notifications require STOPLIGA_TELEGRAM_BOT_TOKEN and either STOPLIGA_TELEGRAM_CHAT_ID or STOPLIGA_TELEGRAM_GROUP_ID"
         )
-    if config.telegram_topic_id is not None and not config.telegram_group_id:
-        raise ConfigError("STOPLIGA_TELEGRAM_TOPIC_ID requires STOPLIGA_TELEGRAM_GROUP_ID")
+    if config.telegram_topic_id is not None and not telegram_target:
+        raise ConfigError("STOPLIGA_TELEGRAM_TOPIC_ID requires STOPLIGA_TELEGRAM_GROUP_ID or STOPLIGA_TELEGRAM_CHAT_ID")
     if config.telegram_topic_id is not None and config.telegram_topic_id <= 0:
         raise ConfigError("STOPLIGA_TELEGRAM_TOPIC_ID must be > 0")
-    if validate_connection:
-        if config.firewall_backend == "opnsense":
-            if not config.opnsense_host:
-                raise ConfigError("OPNSENSE_HOST is required when STOPLIGA_FIREWALL_BACKEND=opnsense")
-            if not config.opnsense_api_key or not config.opnsense_api_secret:
-                raise ConfigError("OPNSENSE_API_KEY and OPNSENSE_API_SECRET are required when STOPLIGA_FIREWALL_BACKEND=opnsense")
-            _validate_host(config.opnsense_host, field_name="OPNSENSE_HOST")
-        else:
-            _validate_host(config.host or "", field_name="UNIFI_HOST")
-            if not config.has_local_api_access():
-                raise ConfigError("local mode requires UNIFI_HOST and UNIFI_API_KEY")
+    if config.router_type == "omada":
+        if len(config.route_name.strip()) > 64:
+            raise ConfigError("omada route_name must be 64 characters or fewer")
+        if validate_connection:
+            if config.omada_target_type not in get_args(OmadaTargetType):
+                raise ConfigError(
+                    f"omada_target_type must be one of {', '.join(get_args(OmadaTargetType))}, not {config.omada_target_type!r}"
+                )
+            if not config.omada_target or not config.omada_target.strip():
+                raise ConfigError("omada mode requires STOPLIGA_OMADA_TARGET")
+            _validate_api_base_url(config.omada_base_url or "", field_name="omada_base_url")
+    elif validate_connection and config.router_type == "opnsense":
+        _validate_host(config.opnsense_host or "", field_name="OPNSENSE_HOST")
+    elif validate_connection:
+        _validate_host(config.host or "", field_name="UNIFI_HOST")
     if config.gotify_url:
         _validate_gotify_url(config.gotify_url, allow_plain_http=config.gotify_allow_plain_http)
     if config.telegram_bot_token:
         if config.telegram_verify_tls is False:
             raise ConfigError("telegram_verify_tls=false is not supported; Telegram notifications must verify TLS")
-    _validate_feed_url(config.status_url, field_name="status_url", allow_private_hosts=config.feed_allow_private_hosts)
-    _validate_feed_url(config.ip_list_url, field_name="ip_list_url", allow_private_hosts=config.feed_allow_private_hosts)
+    _validate_feed_url(
+        config.status_url,
+        field_name="status_url",
+        allow_private_hosts=config.feed_allow_private_hosts,
+        allow_dns=True,
+    )
+    _validate_feed_url(
+        config.ip_list_url,
+        field_name="ip_list_url",
+        allow_private_hosts=config.feed_allow_private_hosts,
+    )
+    if validate_connection:
+        if not config.has_router_api_access():
+            if config.router_type == "omada":
+                raise ConfigError(
+                    "omada mode requires STOPLIGA_OMADA_BASE_URL, STOPLIGA_OMADA_CLIENT_ID, "
+                    "STOPLIGA_OMADA_CLIENT_SECRET, STOPLIGA_OMADA_OMADAC_ID, "
+                    "STOPLIGA_OMADA_TARGET_TYPE and STOPLIGA_OMADA_TARGET"
+                )
+            if config.router_type == "opnsense":
+                raise ConfigError(
+                    "opnsense mode requires OPNSENSE_HOST, OPNSENSE_API_KEY and OPNSENSE_API_SECRET"
+                )
+            raise ConfigError("unifi mode requires UNIFI_HOST and UNIFI_API_KEY")

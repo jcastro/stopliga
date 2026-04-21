@@ -9,22 +9,33 @@ from typing import Any, Literal
 
 RunMode = Literal["once", "loop"]
 InvalidEntryPolicy = Literal["fail", "ignore"]
-FirewallBackend = Literal["unifi", "opnsense"]
+LegacyFirewallBackend = Literal["unifi", "opnsense"]
+RouterType = Literal["unifi", "omada", "opnsense"]
+OmadaTargetType = Literal["wan", "vpn"]
 
 
 @dataclass(frozen=True)
 class Config:
     run_mode: RunMode = "once"
-    firewall_backend: FirewallBackend = "unifi"
+    router_type: RouterType = "unifi"
+    firewall_backend: LegacyFirewallBackend | None = None
     host: str | None = None
     port: int = 443
     api_key: str | None = None
     site: str = "default"
     route_name: str = "StopLiga"
     destination_field: str = "auto"
-    status_url: str = (
-        "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_status.json"
-    )
+    omada_base_url: str | None = None
+    omada_client_id: str | None = None
+    omada_client_secret: str | None = None
+    omada_omadac_id: str | None = None
+    omada_target_type: OmadaTargetType | None = None
+    omada_target: str | None = None
+    omada_source_networks: tuple[str, ...] = ()
+    omada_verify_tls: bool = True
+    omada_ca_file: Path | None = None
+    omada_group_size: int = 16
+    status_url: str = "dns://blocked.dns.hayahora.futbol"
     ip_list_url: str = (
         "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
     )
@@ -72,10 +83,35 @@ class Config:
     telegram_verify_tls: bool | None = None
     telegram_ca_file: Path | None = None
 
+    def __post_init__(self) -> None:
+        resolved_router_type = self.router_type
+        if self.firewall_backend is not None and self.router_type == "unifi":
+            resolved_router_type = self.firewall_backend
+        object.__setattr__(self, "router_type", resolved_router_type)
+        object.__setattr__(
+            self,
+            "firewall_backend",
+            resolved_router_type if resolved_router_type in {"unifi", "opnsense"} else None,
+        )
+
     def has_local_api_access(self) -> bool:
-        if self.firewall_backend == "opnsense":
+        return self.has_router_api_access()
+
+    def has_router_api_access(self) -> bool:
+        if self.router_type == "unifi":
+            return bool(self.host and self.api_key and self.api_key.strip())
+        if self.router_type == "omada":
+            return bool(
+                self.omada_base_url
+                and self.omada_client_id
+                and self.omada_client_secret
+                and self.omada_omadac_id
+                and self.omada_target_type
+                and self.omada_target
+            )
+        if self.router_type == "opnsense":
             return bool(self.opnsense_host and self.opnsense_api_key and self.opnsense_api_secret)
-        return bool(self.host and self.api_key and self.api_key.strip())
+        return False
 
     def has_notifications(self) -> bool:
         return bool(

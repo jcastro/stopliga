@@ -1,15 +1,13 @@
 [app]
-# For most setups, only set host and api_key below.
+# For most setups, only set the credentials in the backend block you use below.
 # Run mode for the service. Use "loop" for normal operation.
 run_mode = "loop"
-
-# Firewall backend: "unifi" (default) or "opnsense"
-# firewall_backend = "unifi"
+router_type = "unifi"
 
 # How often StopLiga runs a full sync, in seconds.
 interval_seconds = 300
 
-# Exact UniFi policy route name that StopLiga should manage or create automatically.
+# Exact managed route or rule name that StopLiga should control.
 route_name = "StopLiga"
 destination_field = "auto"
 request_timeout = 15
@@ -26,7 +24,7 @@ log_level = "INFO"
 dump_payloads_on_error = false
 
 [feeds]
-status_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_status.json"
+status_url = "dns://blocked.dns.hayahora.futbol"
 ip_list_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
 verify_tls = true
 allow_private_hosts = false
@@ -46,16 +44,44 @@ site = "default"
 # Set to false only if your UniFi uses a self-signed certificate.
 verify_tls = false
 
+[omada]
+# Omada Controller interface access URL from Settings > Platform Integration > Open API.
+# base_url = "https://omada-controller.example"
+
+# Omada Open API client credentials and controller/cloud ID.
+# client_id = "replace-me"
+# client_secret = "replace-me"
+# omadac_id = "replace-me"
+
+# Omada site name or ID.
+# site = "Default"
+
+# Route traffic through either a WAN or a VPN target.
+# target_type = "vpn"
+# target = "WG Main"
+
+# Optional subset of LAN networks to use as source. Leave unset to use all LANs.
+# source_networks = ["LAN", "IoT"]
+
+# Conservative chunk size for managed IP Groups.
+# group_size = 16
+
+# Set to false only if your Omada controller uses a self-signed certificate.
+# verify_tls = true
+
 [opnsense]
-# Used when firewall_backend = "opnsense". Set STOPLIGA_FIREWALL_BACKEND=opnsense to activate.
+# OPNsense firewall host or IP address.
 # host = "192.168.1.1"
+
+# OPNsense API key and secret.
 # api_key = "replace-me"
 # api_secret = "replace-me"
-# verify_tls = false
-#
-# Name of the alias StopLiga creates and keeps populated with the feed IPs.
-# Defaults to route_name (from [app]) with special characters replaced by underscores.
-# alias_name = "laliga_ips"
+
+# Optional alias override. Defaults to a sanitized version of route_name.
+# alias_name = "StopLiga"
+
+# Set to false only if your OPNsense uses a self-signed certificate.
+# verify_tls = true
 
 [notifications]
 # gotify_url = "https://gotify.example.com"

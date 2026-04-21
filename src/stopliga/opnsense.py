@@ -30,6 +30,16 @@ def sanitize_alias_name(name: str) -> str:
     return sanitized[:32]
 
 
+def _is_truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
 def parse_alias_content(alias_record: dict[str, Any]) -> list[str]:
     """Normalize IPs from an alias getItem response into a sorted canonical list."""
     content = alias_record.get("content", {})
@@ -37,7 +47,19 @@ def parse_alias_content(alias_record: dict[str, Any]) -> list[str]:
     if isinstance(content, str):
         raw = [line.strip() for line in content.splitlines() if line.strip()]
     elif isinstance(content, dict):
-        raw = [v.strip() for v in content.values() if isinstance(v, str) and v.strip()]
+        if any(isinstance(item, dict) for item in content.values()):
+            for key, item in content.items():
+                if not isinstance(item, dict):
+                    if isinstance(item, str) and item.strip():
+                        raw.append(item.strip())
+                    continue
+                if not _is_truthy_flag(item.get("selected")):
+                    continue
+                value = item.get("value", key)
+                if isinstance(value, str) and value.strip():
+                    raw.append(value.strip())
+        else:
+            raw = [v.strip() for v in content.values() if isinstance(v, str) and v.strip()]
     elif isinstance(content, list):
         raw = [str(item).strip() for item in content if str(item).strip()]
     try:
@@ -262,7 +284,7 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
         )
 
     rule_uuid = str(rule_record.get("uuid", ""))
-    current_enabled = rule_record.get("enabled") == "1"
+    current_enabled = _is_truthy_flag(rule_record.get("enabled"))
     rule_changed = current_enabled != desired_enabled
 
     log_event(

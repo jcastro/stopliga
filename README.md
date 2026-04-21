@@ -159,7 +159,7 @@ Required fields:
 | **Action** | Pass |
 | **Interface** | interface your clients use (e.g. LAN) |
 | **Direction** | In |
-| **Source** | the alias named by `OPNSENSE_ALIAS_NAME` |
+| **Destination** | the alias named by `OPNSENSE_ALIAS_NAME` |
 | **Gateway** | your VPN gateway |
 
 Place the rule above any default gateway rules. Save — StopLiga manages the enabled state via API from this point on.

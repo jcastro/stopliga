@@ -118,6 +118,25 @@ site = "default"
         self.assertEqual(config.status_url, "http://127.0.0.1/status.json")
         self.assertEqual(config.ip_list_url, "http://localhost/ip_list.txt")
 
+    def test_opnsense_backend_loads_without_unifi_credentials(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "STOPLIGA_FIREWALL_BACKEND": "opnsense",
+                "OPNSENSE_HOST": "10.0.0.3",
+                "OPNSENSE_API_KEY": "test-opnsense-key",
+                "OPNSENSE_API_SECRET": "test-opnsense-secret",
+            },
+        )
+        self.assertEqual(config.firewall_backend, "opnsense")
+        self.assertEqual(config.opnsense_host, "10.0.0.3")
+        self.assertEqual(config.opnsense_api_key, "test-opnsense-key")
+        self.assertEqual(config.opnsense_api_secret, "test-opnsense-secret")
+        self.assertIsNone(config.host)
+        self.assertIsNone(config.api_key)
+
     def test_partial_gotify_configuration_is_rejected(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])

@@ -3,6 +3,9 @@
 # Run mode for the service. Use "loop" for normal operation.
 run_mode = "loop"
 
+# Firewall backend: "unifi" (default) or "opnsense"
+# firewall_backend = "unifi"
+
 # How often StopLiga runs a full sync, in seconds.
 interval_seconds = 300
 
@@ -42,6 +45,17 @@ site = "default"
 
 # Set to false only if your UniFi uses a self-signed certificate.
 verify_tls = false
+
+[opnsense]
+# Used when firewall_backend = "opnsense". Set STOPLIGA_FIREWALL_BACKEND=opnsense to activate.
+# host = "192.168.1.1"
+# api_key = "replace-me"
+# api_secret = "replace-me"
+# verify_tls = false
+#
+# Name of the alias StopLiga creates and keeps populated with the feed IPs.
+# Defaults to route_name (from [app]) with special characters replaced by underscores.
+# alias_name = "laliga_ips"
 
 [notifications]
 # gotify_url = "https://gotify.example.com"

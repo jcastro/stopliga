@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from urllib.parse import urlparse
 
 
@@ -21,7 +22,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from stopliga.models import Config  # noqa: E402
+from stopliga.models import Config, FeedSnapshot, SyncResult  # noqa: E402
+from stopliga.opnsense import parse_alias_content, sync_opnsense  # noqa: E402
 from stopliga.service import StopLigaService  # noqa: E402
 from stopliga.notifier import _safe_notification_url  # noqa: E402
 from stopliga.errors import AuthenticationError, DiscoveryError, NetworkError, PartialUpdateError, ReconciliationRequiredError, StateError, UnsupportedRouteShapeError  # noqa: E402
@@ -1209,3 +1211,158 @@ class ServiceIntegrationTests(unittest.TestCase):
             )
             with self.assertRaises(NetworkError):
                 StopLigaService(config).run_once()
+
+
+class OPNsenseTests(unittest.TestCase):
+    @staticmethod
+    def make_opnsense_config(**overrides: Any) -> Config:
+        base = {
+            "run_mode": "once",
+            "firewall_backend": "opnsense",
+            "route_name": "LaLiga",
+            "opnsense_host": "fw.local",
+            "opnsense_api_key": "test-opnsense-key",
+            "opnsense_api_secret": "test-opnsense-secret",
+            "opnsense_verify_tls": False,
+            "feed_verify_tls": False,
+        }
+        base.update(overrides)
+        return Config(**base)
+
+    @staticmethod
+    def make_feed_snapshot(
+        *,
+        is_blocked: bool = True,
+        destinations: list[str] | None = None,
+    ) -> FeedSnapshot:
+        values = destinations or ["192.0.2.10", "198.51.100.0/24"]
+        return FeedSnapshot(
+            is_blocked=is_blocked,
+            desired_enabled=is_blocked,
+            destinations=values,
+            raw_status={"isBlocked": is_blocked},
+            raw_line_count=len(values),
+            valid_count=len(values),
+            invalid_count=0,
+            invalid_entries=[],
+            destinations_hash="destinations-hash",
+            feed_hash="feed-hash",
+        )
+
+    def test_parse_alias_content_reads_selected_entries_from_getitem_shape(self) -> None:
+        alias_record = {
+            "content": {
+                "192.0.2.10": {"value": "192.0.2.10", "selected": 1},
+                "198.51.100.0/24": {"value": "198.51.100.0/24", "selected": 1},
+                "OtherAlias": {"value": "OtherAlias", "selected": 0, "description": "ignored"},
+            }
+        }
+
+        self.assertEqual(parse_alias_content(alias_record), ["192.0.2.10", "198.51.100.0/24"])
+
+    def test_sync_opnsense_is_idempotent_when_alias_and_rule_already_match(self) -> None:
+        config = self.make_opnsense_config()
+        feed_snapshot = self.make_feed_snapshot()
+        alias_record = {
+            "content": {
+                "192.0.2.10": {"value": "192.0.2.10", "selected": 1},
+                "198.51.100.0/24": {"value": "198.51.100.0/24", "selected": 1},
+                "UnusedAlias": {"value": "UnusedAlias", "selected": 0},
+            }
+        }
+
+        with (
+            patch("stopliga.opnsense.OPNsenseClient.authenticate", return_value=None),
+            patch("stopliga.opnsense.OPNsenseClient.search_alias", return_value={"uuid": "alias-1"}),
+            patch("stopliga.opnsense.OPNsenseClient.get_alias_item", return_value=alias_record),
+            patch("stopliga.opnsense.OPNsenseClient.search_rule", return_value={"uuid": "rule-1", "enabled": "1"}),
+            patch("stopliga.opnsense.OPNsenseClient.update_alias_content") as update_alias_content,
+            patch("stopliga.opnsense.OPNsenseClient.reconfigure_alias") as reconfigure_alias,
+            patch("stopliga.opnsense.OPNsenseClient.toggle_rule") as toggle_rule,
+            patch("stopliga.opnsense.OPNsenseClient.apply_filter") as apply_filter,
+        ):
+            result = sync_opnsense(config, feed_snapshot)
+
+        self.assertFalse(result.changed)
+        self.assertFalse(result.created)
+        self.assertEqual(result.current_destinations, 2)
+        self.assertEqual(result.added_destinations, 0)
+        self.assertEqual(result.removed_destinations, 0)
+        self.assertTrue(result.current_enabled)
+        update_alias_content.assert_not_called()
+        reconfigure_alias.assert_not_called()
+        toggle_rule.assert_not_called()
+        apply_filter.assert_not_called()
+
+    def test_sync_opnsense_updates_alias_and_rule_when_needed(self) -> None:
+        config = self.make_opnsense_config()
+        feed_snapshot = self.make_feed_snapshot()
+        alias_record = {
+            "content": {
+                "203.0.113.0/24": {"value": "203.0.113.0/24", "selected": 1},
+                "UnusedAlias": {"value": "UnusedAlias", "selected": 0},
+            }
+        }
+
+        with (
+            patch("stopliga.opnsense.OPNsenseClient.authenticate", return_value=None),
+            patch("stopliga.opnsense.OPNsenseClient.search_alias", return_value={"uuid": "alias-1"}),
+            patch("stopliga.opnsense.OPNsenseClient.get_alias_item", return_value=alias_record),
+            patch("stopliga.opnsense.OPNsenseClient.search_rule", return_value={"uuid": "rule-1", "enabled": "0"}),
+            patch("stopliga.opnsense.OPNsenseClient.update_alias_content") as update_alias_content,
+            patch("stopliga.opnsense.OPNsenseClient.reconfigure_alias") as reconfigure_alias,
+            patch("stopliga.opnsense.OPNsenseClient.toggle_rule") as toggle_rule,
+            patch("stopliga.opnsense.OPNsenseClient.apply_filter") as apply_filter,
+        ):
+            result = sync_opnsense(config, feed_snapshot)
+
+        self.assertTrue(result.changed)
+        self.assertFalse(result.created)
+        self.assertFalse(result.current_enabled)
+        self.assertEqual(result.current_destinations, 1)
+        self.assertEqual(result.added_destinations, 2)
+        self.assertEqual(result.removed_destinations, 1)
+        update_alias_content.assert_called_once_with("alias-1", "LaLiga", ["192.0.2.10", "198.51.100.0/24"])
+        reconfigure_alias.assert_called_once_with()
+        toggle_rule.assert_called_once_with("rule-1", True)
+        apply_filter.assert_called_once_with()
+
+    def test_service_dispatches_to_opnsense_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self.make_opnsense_config(
+                request_timeout=5.0,
+                retries=2,
+                state_file=Path(tmpdir) / "state.json",
+                lock_file=Path(tmpdir) / "stopliga.lock",
+                bootstrap_guard_file=Path(tmpdir) / "bootstrap_guard.json",
+                status_url="http://invalid/feed/status.json",
+                ip_list_url="http://invalid/feed/ip_list.txt",
+            )
+            feed_snapshot = self.make_feed_snapshot()
+            expected_result = SyncResult(
+                mode="opnsense",
+                route_name="LaLiga",
+                route_id="rule-1",
+                backend_name="opnsense-alias+rule",
+                changed=False,
+                created=False,
+                dry_run=False,
+                desired_enabled=True,
+                current_enabled=True,
+                desired_destinations=2,
+                current_destinations=2,
+                invalid_entries=0,
+                feed_hash="feed-hash",
+                destinations_hash="destinations-hash",
+                summary="already in sync",
+                is_blocked=True,
+            )
+
+            with (
+                patch("stopliga.service.load_feed_snapshot", return_value=feed_snapshot),
+                patch("stopliga.service.sync_opnsense", return_value=expected_result) as sync_opnsense_mock,
+            ):
+                result = StopLigaService(config).run_once()
+
+        self.assertEqual(result.mode, "opnsense")
+        sync_opnsense_mock.assert_called_once_with(config, feed_snapshot)

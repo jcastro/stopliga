@@ -9,11 +9,13 @@ from typing import Any, Literal
 
 RunMode = Literal["once", "loop"]
 InvalidEntryPolicy = Literal["fail", "ignore"]
+FirewallBackend = Literal["unifi", "opnsense"]
 
 
 @dataclass(frozen=True)
 class Config:
     run_mode: RunMode = "once"
+    firewall_backend: FirewallBackend = "unifi"
     host: str | None = None
     port: int = 443
     api_key: str | None = None
@@ -28,6 +30,12 @@ class Config:
     )
     unifi_verify_tls: bool = True
     unifi_ca_file: Path | None = None
+    opnsense_host: str | None = None
+    opnsense_api_key: str | None = None
+    opnsense_api_secret: str | None = None
+    opnsense_verify_tls: bool = True
+    opnsense_ca_file: Path | None = None
+    opnsense_alias_name: str | None = None
     feed_verify_tls: bool = True
     feed_ca_file: Path | None = None
     feed_allow_private_hosts: bool = False
@@ -65,6 +73,8 @@ class Config:
     telegram_ca_file: Path | None = None
 
     def has_local_api_access(self) -> bool:
+        if self.firewall_backend == "opnsense":
+            return bool(self.opnsense_host and self.opnsense_api_key and self.opnsense_api_secret)
         return bool(self.host and self.api_key and self.api_key.strip())
 
     def has_notifications(self) -> bool:

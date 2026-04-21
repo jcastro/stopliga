@@ -93,7 +93,8 @@ def _collapse_destinations(destinations: Sequence[str]) -> list[str]:
     networks = [ipaddress.ip_network(token, strict=False) for token in destinations]
     if any(network.version != 4 for network in networks):
         raise UnsupportedRouteShapeError("Omada policy routing currently supports IPv4 destinations only")
-    return sort_ip_tokens(str(network) for network in ipaddress.collapse_addresses(networks))
+    ipv4_networks = [network for network in networks if isinstance(network, ipaddress.IPv4Network)]
+    return sort_ip_tokens(str(network) for network in ipaddress.collapse_addresses(ipv4_networks))
 
 
 def _chunked(values: Sequence[str], size: int) -> list[list[str]]:
@@ -515,11 +516,11 @@ class OmadaRouterDriver(RouterDriver):
 
     def _find_route(self, routes: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
         target = self.config.route_name.strip().lower()
-        matches = [
-            route
-            for route in routes
-            if _normalize_text(route.get("name")) and _normalize_text(route.get("name")).lower() == target
-        ]
+        matches = []
+        for route in routes:
+            route_name = _normalize_text(route.get("name"))
+            if route_name is not None and route_name.lower() == target:
+                matches.append(route)
         if not matches:
             return None
         if len(matches) > 1:
@@ -545,14 +546,14 @@ class OmadaRouterDriver(RouterDriver):
         if not networks:
             raise DiscoveryError("Omada site does not expose any LAN networks")
         if not self.config.omada_source_networks:
-            resolved = []
+            resolved_network_ids: list[str] = []
             for network in networks:
                 network_id = _normalize_text(network.get("id"))
                 if network_id:
-                    resolved.append(network_id)
-            if not resolved:
+                    resolved_network_ids.append(network_id)
+            if not resolved_network_ids:
                 raise DiscoveryError("Omada LAN networks did not expose usable IDs")
-            return sorted(set(resolved))
+            return sorted(set(resolved_network_ids))
 
         by_alias: dict[str, list[str]] = {}
         for network in networks:
@@ -564,63 +565,66 @@ class OmadaRouterDriver(RouterDriver):
             for alias in aliases:
                 by_alias.setdefault(alias.lower(), []).append(network_id)
 
-        resolved: list[str] = []
+        resolved_targets: list[str] = []
         for raw_target in self.config.omada_source_networks:
-            matches = by_alias.get(raw_target.strip().lower(), [])
-            if not matches:
+            matched_network_ids = by_alias.get(raw_target.strip().lower(), [])
+            if not matched_network_ids:
                 raise DiscoveryError(f"Omada source network {raw_target!r} was not found")
-            if len(set(matches)) > 1:
+            if len(set(matched_network_ids)) > 1:
                 raise DiscoveryError(f"Omada source network {raw_target!r} is ambiguous")
-            resolved.append(matches[0])
-        return sorted(set(resolved))
+            resolved_targets.append(matched_network_ids[0])
+        return sorted(set(resolved_targets))
 
     def _resolve_target(self, client: OmadaClient, site_id: str) -> OmadaTarget:
-        target = self.config.omada_target.strip().lower()
+        configured_target = self.config.omada_target
+        if configured_target is None:
+            raise DiscoveryError("Omada target is not configured")
+        target = configured_target.strip().lower()
         if self.config.omada_target_type == "wan":
-            matches: list[OmadaTarget] = []
+            wan_matches: list[OmadaTarget] = []
             for record in client.list_wans(site_id):
                 target_id = _normalize_text(record.get("id"))
                 name = _normalize_text(record.get("name"))
                 aliases = {alias.lower() for alias in (target_id, name) if alias is not None}
                 if target in aliases and target_id:
-                    matches.append(OmadaTarget(kind="wan", target_id=target_id, label=name or target_id))
-            if not matches:
-                raise DiscoveryError(f"Omada WAN target {self.config.omada_target!r} was not found")
-            if len(matches) > 1:
-                raise DiscoveryError(f"Omada WAN target {self.config.omada_target!r} is ambiguous")
-            return matches[0]
+                    wan_matches.append(OmadaTarget(kind="wan", target_id=target_id, label=name or target_id))
+            if not wan_matches:
+                raise DiscoveryError(f"Omada WAN target {configured_target!r} was not found")
+            if len(wan_matches) > 1:
+                raise DiscoveryError(f"Omada WAN target {configured_target!r} is ambiguous")
+            return wan_matches[0]
 
         for kind, records in (
             ("site-to-site", client.list_site_to_site_vpns(site_id)),
             ("client-to-site", client.list_client_to_site_vpns(site_id)),
         ):
-            matches: list[OmadaTarget] = []
+            vpn_matches: list[OmadaTarget] = []
             for record in records:
                 target_id = _normalize_text(record.get("id"))
                 name = _normalize_text(record.get("name"))
                 aliases = {alias.lower() for alias in (target_id, name) if alias is not None}
                 if target in aliases and target_id:
                     label = f"{kind}:{name or target_id}"
-                    matches.append(OmadaTarget(kind="vpn", target_id=target_id, label=label))
-            if len(matches) > 1:
-                raise DiscoveryError(f"Omada VPN target {self.config.omada_target!r} is ambiguous")
-            if matches:
-                return matches[0]
+                    vpn_matches.append(OmadaTarget(kind="vpn", target_id=target_id, label=label))
+            if len(vpn_matches) > 1:
+                raise DiscoveryError(f"Omada VPN target {configured_target!r} is ambiguous")
+            if vpn_matches:
+                return vpn_matches[0]
 
         # WireGuard list is deprecated in the official docs, so only use it as a fallback.
-        matches = []
+        wireguard_matches: list[OmadaTarget] = []
         for record in client.list_wireguard_vpns(site_id):
             target_id = _normalize_text(record.get("id"))
             name = _normalize_text(record.get("name"))
             aliases = {alias.lower() for alias in (target_id, name) if alias is not None}
             if target in aliases and target_id:
                 label = f"wireguard:{name or target_id}"
-                matches.append(OmadaTarget(kind="vpn", target_id=target_id, label=label))
-        if not matches:
-            raise DiscoveryError(f"Omada VPN target {self.config.omada_target!r} was not found")
-        if len(matches) > 1:
-            raise DiscoveryError(f"Omada VPN target {self.config.omada_target!r} is ambiguous")
-        return matches[0]
+                wireguard_matches.append(OmadaTarget(kind="vpn", target_id=target_id, label=label))
+        if not wireguard_matches:
+            raise DiscoveryError(f"Omada VPN target {configured_target!r} was not found")
+        if len(wireguard_matches) > 1:
+            raise DiscoveryError(f"Omada VPN target {configured_target!r} is ambiguous")
+        return wireguard_matches[0]
 
     @staticmethod
     def _build_policy_payload(

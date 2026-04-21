@@ -219,11 +219,14 @@ def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
     for attempt in range(1, max(1, retries) + 1):
         try:
             answers = socket.getaddrinfo(hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
-            addresses = sort_ip_tokens(
-                answer[4][0]
-                for answer in answers
-                if len(answer) >= 5 and isinstance(answer[4], tuple) and answer[4] and answer[4][0]
-            )
+            resolved_values: list[str] = []
+            for answer in answers:
+                if len(answer) < 5 or not isinstance(answer[4], tuple) or not answer[4]:
+                    continue
+                candidate = answer[4][0]
+                if isinstance(candidate, str) and candidate:
+                    resolved_values.append(candidate)
+            addresses = sort_ip_tokens(resolved_values)
             return [address for address in addresses if "/" not in address]
         except (socket.gaierror, OSError, ValueError) as exc:
             last_error = exc

@@ -77,6 +77,20 @@ site = "default"
         )
         self.assertEqual(config.router_type, "unifi")
 
+    def test_generic_backend_alias_selects_router_type(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "STOPLIGA_BACKEND": "unifi",
+                "STOPLIGA_CONTROLLER_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+            },
+        )
+        self.assertEqual(config.router_type, "unifi")
+        self.assertEqual(config.host, "10.0.0.2")
+
     def test_current_production_style_unifi_env_still_loads(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
@@ -104,6 +118,53 @@ site = "default"
         self.assertEqual(config.route_name, "StopLiga")
         self.assertEqual(config.telegram_bot_token, "123456:test-token")
         self.assertEqual(config.telegram_chat_id, "2165833")
+
+    def test_generic_controller_env_is_preferred_over_legacy_unifi_aliases(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "STOPLIGA_CONTROLLER_HOST": "10.0.0.9",
+                "STOPLIGA_SITE": "lab",
+                "STOPLIGA_CONTROLLER_VERIFY_TLS": "false",
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_SITE": "default",
+                "UNIFI_VERIFY_TLS": "true",
+                "UNIFI_API_KEY": "test-api-key",
+            },
+        )
+        self.assertEqual(config.host, "10.0.0.9")
+        self.assertEqual(config.site, "lab")
+        self.assertFalse(config.unifi_verify_tls)
+
+    def test_toml_controller_section_is_used_for_shared_connection_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "stopliga.toml"
+            config_path.write_text(
+                """
+[app]
+backend = "unifi"
+
+[controller]
+host = "10.0.0.8"
+port = 8443
+site = "lab"
+verify_tls = false
+
+[unifi]
+api_key = "file-api-key"
+                """.strip(),
+                encoding="utf-8",
+            )
+            parser = build_parser()
+            args = parser.parse_args(["--config", str(config_path)])
+            config = load_config(args, {})
+            self.assertEqual(config.host, "10.0.0.8")
+            self.assertEqual(config.port, 8443)
+            self.assertEqual(config.site, "lab")
+            self.assertFalse(config.unifi_verify_tls)
+            self.assertEqual(config.api_key, "file-api-key")
 
     def test_invalid_router_type_is_rejected(self) -> None:
         parser = build_parser()
@@ -141,6 +202,30 @@ site = "default"
         self.assertEqual(config.omada_target_type, "vpn")
         self.assertEqual(config.omada_target, "WG-Madrid")
         self.assertEqual(config.omada_source_networks, ("LAN", "IoT"))
+
+    def test_omada_mode_can_derive_base_url_from_generic_controller_settings(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "STOPLIGA_BACKEND": "omada",
+                "STOPLIGA_CONTROLLER_HOST": "controller.example",
+                "STOPLIGA_CONTROLLER_PORT": "8043",
+                "STOPLIGA_SITE": "Madrid",
+                "STOPLIGA_CONTROLLER_VERIFY_TLS": "false",
+                "OMADA_CLIENT_ID": "client-id",
+                "OMADA_CLIENT_SECRET": "client-secret",
+                "OMADA_CONTROLLER_ID": "omadac-id",
+                "OMADA_TARGET_TYPE": "vpn",
+                "OMADA_TARGET": "WG-Madrid",
+            },
+        )
+        self.assertEqual(config.router_type, "omada")
+        self.assertEqual(config.omada_base_url, "https://controller.example:8043")
+        self.assertEqual(config.site, "Madrid")
+        self.assertFalse(config.omada_verify_tls)
+        self.assertEqual(config.omada_omadac_id, "omadac-id")
 
     def test_omada_mode_requires_target_type(self) -> None:
         parser = build_parser()

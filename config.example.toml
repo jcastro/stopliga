@@ -1,8 +1,8 @@
 [app]
-# For most setups, only set the credentials in the backend block you use below.
+# Preferred backend selector. `router_type` still works too.
 # Run mode for the service. Use "loop" for normal operation.
 run_mode = "loop"
-router_type = "unifi"
+backend = "unifi"
 
 # How often StopLiga runs a full sync, in seconds.
 interval_seconds = 300
@@ -30,31 +30,23 @@ verify_tls = true
 allow_private_hosts = false
 strict_consistency = true
 
-[unifi]
-# UniFi host or IP address.
+[controller]
+# Shared controller connection settings for UniFi and Omada.
 host = "192.168.1.1"
 port = 443
+site = "default"
+verify_tls = false
+# ca_file = "/path/to/ca.pem"
 
-# Local UniFi API key.
+[unifi]
+# UniFi-specific authentication.
 api_key = "replace-me"
 
-# UniFi site name. "default" is the normal value.
-site = "default"
-
-# Set to false only if your UniFi uses a self-signed certificate.
-verify_tls = false
-
 [omada]
-# Omada Controller interface access URL from Settings > Platform Integration > Open API.
-# base_url = "https://omada-controller.example"
-
 # Omada Open API client credentials and controller/cloud ID.
 # client_id = "replace-me"
 # client_secret = "replace-me"
 # omadac_id = "replace-me"
-
-# Omada site name or ID.
-# site = "Default"
 
 # Route traffic through either a WAN or a VPN target.
 # target_type = "vpn"
@@ -65,9 +57,6 @@ verify_tls = false
 
 # Conservative chunk size for managed IP Groups.
 # group_size = 16
-
-# Set to false only if your Omada controller uses a self-signed certificate.
-# verify_tls = true
 
 [opnsense]
 # OPNsense firewall host or IP address.

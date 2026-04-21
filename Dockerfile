@@ -1,5 +1,5 @@
 ARG PYTHON_BASE=python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286
-ARG VERSION=0.1.11
+ARG VERSION=0.1.12
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga
@@ -25,7 +25,7 @@ RUN pip install --upgrade pip==26.0.1 setuptools==82.0.1 wheel==0.46.3 \
 
 FROM ${PYTHON_BASE} AS runtime
 
-ARG VERSION=0.1.11
+ARG VERSION=0.1.12
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga

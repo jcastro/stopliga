@@ -77,6 +77,34 @@ site = "default"
         )
         self.assertEqual(config.router_type, "unifi")
 
+    def test_current_production_style_unifi_env_still_loads(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.1.1",
+                "UNIFI_API_KEY": "test-api-key",
+                "UNIFI_SITE": "default",
+                "UNIFI_VERIFY_TLS": "false",
+                "STOPLIGA_RUN_MODE": "loop",
+                "STOPLIGA_SYNC_INTERVAL_SECONDS": "300",
+                "STOPLIGA_ROUTE_NAME": "StopLiga",
+                "STOPLIGA_TELEGRAM_BOT_TOKEN": "123456:test-token",
+                "STOPLIGA_TELEGRAM_CHAT_ID": "2165833",
+            },
+        )
+        self.assertEqual(config.router_type, "unifi")
+        self.assertEqual(config.host, "10.0.1.1")
+        self.assertEqual(config.api_key, "test-api-key")
+        self.assertEqual(config.site, "default")
+        self.assertFalse(config.unifi_verify_tls)
+        self.assertEqual(config.run_mode, "loop")
+        self.assertEqual(config.interval_seconds, 300)
+        self.assertEqual(config.route_name, "StopLiga")
+        self.assertEqual(config.telegram_bot_token, "123456:test-token")
+        self.assertEqual(config.telegram_chat_id, "2165833")
+
     def test_invalid_router_type_is_rejected(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])

@@ -1,21 +1,22 @@
-"""GitHub feed download, validation and normalization."""
+"""Feed download, validation and normalization."""
 
 from __future__ import annotations
 
 import ipaddress
 import json
 import logging
+import socket
 import ssl
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
 from .errors import InvalidFeedError, NetworkError
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot
-from .utils import canonicalize_ip_token, make_ssl_context, read_limited, sleep_with_backoff, stable_hash
+from .utils import canonicalize_ip_token, make_ssl_context, read_limited, sleep_with_backoff, stable_hash, sort_ip_tokens
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,50 @@ def parse_status_payload(raw_text: str) -> tuple[dict[str, Any], bool]:
         return payload, _truthy_state(payload["blocked"])
     if "state" in payload:
         return payload, _truthy_state(payload["state"])
-    raise InvalidFeedError("Status feed does not expose isBlocked, blocked or state")
+    hayahora_status = _parse_hayahora_status_payload(payload)
+    if hayahora_status is not None:
+        return hayahora_status
+    raise InvalidFeedError("Status feed does not expose isBlocked, blocked, state or a supported hayahora history payload")
+
+
+def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], bool] | None:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return None
+
+    active_ips: set[str] = set()
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        ip_value = entry.get("ip")
+        if not isinstance(ip_value, str) or not ip_value.strip():
+            continue
+        state_changes = entry.get("stateChanges")
+        if not isinstance(state_changes, list) or not state_changes:
+            continue
+
+        latest_state: bool | None = None
+        for change in state_changes:
+            if not isinstance(change, dict) or "state" not in change:
+                continue
+            latest_state = _truthy_state(change["state"])
+        if latest_state:
+            try:
+                active_ips.add(canonicalize_ip_token(ip_value))
+            except ValueError:
+                continue
+
+    active_ip_list = sort_ip_tokens(active_ips)
+    is_blocked = bool(active_ip_list)
+    summarized_payload: dict[str, Any] = {
+        "source": "hayahora-history-json",
+        "lastUpdate": payload.get("lastUpdate"),
+        "blocked": is_blocked,
+        "activeIpCount": len(active_ip_list),
+    }
+    if active_ip_list:
+        summarized_payload["activeIpSample"] = active_ip_list[:5]
+    return summarized_payload, is_blocked
 
 
 def parse_ip_list(raw_text: str, *, policy: str) -> tuple[list[str], int, list[str]]:
@@ -154,6 +198,73 @@ def fetch_text(
                 continue
             raise NetworkError(f"Unable to fetch {safe_url}: {exc}") from exc
     raise NetworkError(f"Unable to fetch {safe_url}: {last_error}")
+
+
+def _parse_dns_feed_host(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.scheme != "dns":
+        return None
+    hostname = parsed.hostname
+    if not hostname:
+        raise InvalidFeedError("DNS feed URL must include a hostname")
+    return hostname
+
+
+def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
+    """Resolve a DNS hostname into a deterministic list of IP addresses."""
+
+    logger = logging.getLogger("stopliga.feed")
+    last_error: Exception | None = None
+
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            answers = socket.getaddrinfo(hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+            addresses = sort_ip_tokens(
+                answer[4][0]
+                for answer in answers
+                if len(answer) >= 5 and isinstance(answer[4], tuple) and answer[4] and answer[4][0]
+            )
+            return [address for address in addresses if "/" not in address]
+        except (socket.gaierror, OSError, ValueError) as exc:
+            last_error = exc
+            if attempt < retries:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "feed_retry",
+                    url=f"dns://{hostname}",
+                    attempt=attempt,
+                    retries=retries,
+                    error=exc,
+                )
+                sleep_with_backoff(attempt)
+                continue
+            raise NetworkError(f"Unable to resolve dns://{hostname}: {exc}") from exc
+    raise NetworkError(f"Unable to resolve dns://{hostname}: {last_error}")
+
+
+def load_status_snapshot(config: Config) -> tuple[dict[str, Any], bool]:
+    dns_host = _parse_dns_feed_host(config.status_url)
+    if dns_host is not None:
+        resolved_ips = resolve_dns_addresses(dns_host, retries=config.retries)
+        is_blocked = bool(resolved_ips)
+        return {
+            "source": "dns",
+            "hostname": dns_host,
+            "blocked": is_blocked,
+            "recordCount": len(resolved_ips),
+            "recordSample": resolved_ips[:5],
+        }, is_blocked
+
+    raw_status_text = fetch_text(
+        config.status_url,
+        timeout=config.request_timeout,
+        retries=config.retries,
+        verify_tls=config.feed_verify_tls,
+        max_bytes=config.max_response_bytes,
+        ca_file=config.feed_ca_file,
+    )
+    return parse_status_payload(raw_status_text)
 
 
 def _safe_log_url(url: str) -> str:
@@ -264,15 +375,8 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
         log_event(logger, logging.INFO, "feed_revision_resolved", revision=source_revision)
     elif config.status_url != status_url or config.ip_list_url != ip_list_url:
         log_event(logger, logging.WARNING, "feed_revision_resolution_skipped", status_url=config.status_url, ip_list_url=config.ip_list_url)
-    raw_status_text = fetch_text(
-        status_url,
-        timeout=config.request_timeout,
-        retries=config.retries,
-        verify_tls=config.feed_verify_tls,
-        max_bytes=config.max_response_bytes,
-        ca_file=config.feed_ca_file,
-    )
-    raw_status, is_blocked = parse_status_payload(raw_status_text)
+    status_config = config if status_url == config.status_url else replace(config, status_url=status_url)
+    raw_status, is_blocked = load_status_snapshot(status_config)
 
     raw_ip_text = fetch_text(
         ip_list_url,

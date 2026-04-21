@@ -1,42 +1,53 @@
 # StopLiga
 
-StopLiga keeps a firewall route or alias in sync with the status and IP list published by [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list).
+StopLiga keeps a managed router route named `StopLiga` in sync with the live block status published by [`hayahora.futbol`](https://hayahora.futbol/) and the destination IP list published by [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list).
 
-Supported firewall backends:
+Today the bundled router drivers are `unifi`, `omada`, and `opnsense`. `unifi` remains the default.
 
-- **UniFi** — manages a policy-based traffic route (default)
-- **OPNsense** — manages a firewall alias and toggles a firewall rule
-
-> Set your firewall credentials, start the container, and StopLiga takes care of the rest automatically.
+> Edit the credentials for your backend, start the container, and StopLiga takes care of the managed route or rule automatically.
 
 This repo is meant to run with Docker.
 
 ## At a Glance
 
-- Enables or disables the route/alias based on the published blocking status
-- Creates the route/alias automatically if it does not exist
-- Reuses and updates it if it already exists
+- Creates the UniFi policy route automatically if it does not exist
+- Reuses and updates the route if it already exists
+- Picks the first available UniFi network whose purpose is `vpn-client`
+- Applies the route to `ALL_CLIENTS` when UniFi allows it
+- Enables or disables the route based on the live blocking status from `hayahora.futbol`
 - Syncs every 5 minutes by default
 
-StopLiga uses the public destinations published by [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list). It does not discover those IPs by itself.
+By default, StopLiga uses the live DNS status feed published by [`hayahora.futbol`](https://hayahora.futbol/) to decide whether blocking is active, and the public destinations published by [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list) for the managed route contents.
 
----
+## Requirements
 
-## UniFi
+For UniFi you need:
 
-### Requirements
-
-- A UniFi gateway/controller reachable from the container
-- A local UniFi Network API key
-- At least one UniFi VPN Client network already configured in UniFi
+- a UniFi gateway/controller reachable from the container
+- a local UniFi Network API key
+- at least one UniFi VPN Client network already configured in UniFi
 
 > StopLiga does not create the VPN tunnel itself. It creates and manages the UniFi policy route that uses that tunnel.
 
-### Quick Start
+For Omada you need:
+
+- an Omada Controller with Open API enabled
+- the Controller Interface Access Address, Client ID, Client Secret and Omada ID
+- a target WAN or VPN already configured in Omada
+- at least one LAN network in the target site
+
+For OPNsense you need:
+
+- an OPNsense firewall reachable from the container over HTTPS
+- an API key and secret with access to firewall aliases and rules
+- a firewall rule created once whose description exactly matches `STOPLIGA_ROUTE_NAME`
+
+## Quick Start
 
 1. Copy the example environment file.
-2. Edit only `UNIFI_HOST` and `UNIFI_API_KEY`.
+2. Edit the block for the backend you want to use.
 3. Start the container.
+4. Follow the logs.
 
 ```bash
 cp .env.example .env
@@ -45,47 +56,59 @@ docker compose up -d
 docker compose logs -f
 ```
 
-### Minimal `.env` (UniFi)
+### Minimal `.env`
+
+For UniFi, your `.env` can stay as simple as this:
 
 ```dotenv
 UNIFI_HOST=10.0.1.1
 UNIFI_API_KEY=replace-me
+STOPLIGA_ROUTER_TYPE=unifi
 UNIFI_SITE=default
 UNIFI_VERIFY_TLS=false
 STOPLIGA_RUN_MODE=loop
 STOPLIGA_SYNC_INTERVAL_SECONDS=300
 STOPLIGA_ROUTE_NAME=StopLiga
+STOPLIGA_MAX_RESPONSE_BYTES=2097152
 ```
 
 | Variable | What it is for |
 | --- | --- |
 | `UNIFI_HOST` | IP or hostname of your UniFi router or controller |
-| `UNIFI_API_KEY` | Local UniFi Network API key |
-| `UNIFI_SITE` | UniFi site name. `default` works for most setups |
-| `UNIFI_VERIFY_TLS` | Set `false` for self-signed certs, common on home setups |
+| `UNIFI_API_KEY` | Local UniFi Network API key that StopLiga uses to connect |
+| `STOPLIGA_ROUTER_TYPE` | Router driver to use: `unifi`, `omada`, or `opnsense`. `unifi` is the default |
+| `UNIFI_SITE` | UniFi site to use. `default` is the normal value for most setups |
+| `UNIFI_VERIFY_TLS` | Whether StopLiga should verify the UniFi HTTPS certificate. `false` is common on home setups with self-signed certs |
 | `STOPLIGA_RUN_MODE` | `loop` keeps the container running and syncing continuously |
-| `STOPLIGA_SYNC_INTERVAL_SECONDS` | Sync interval in seconds. `300` = every 5 minutes |
-| `STOPLIGA_ROUTE_NAME` | Route name StopLiga will create or manage |
+| `STOPLIGA_SYNC_INTERVAL_SECONDS` | How often StopLiga checks the feed and updates UniFi. `300` means every 5 minutes |
+| `STOPLIGA_ROUTE_NAME` | Managed route or rule name that StopLiga will create, match, or toggle depending on the selected driver |
+| `STOPLIGA_MAX_RESPONSE_BYTES` | Safety limit for downloaded responses. Leave the default unless you have a specific reason to change it |
 
-For the API key, open UniFi Network → `Settings > Control Plane > Integrations`, then create a local Network API key.
+For the API key, open UniFi Network and go to `Settings > Control Plane > Integrations`, then create or copy a local Network API key and paste it into `UNIFI_API_KEY` in `.env`.
 
 Official reference: [Getting Started with the Official UniFi API](https://help.ui.com/hc/en-us/articles/30076656117655-Getting-Started-with-the-Official-UniFi-API)
 
-### What Happens Automatically (UniFi)
+For Omada, open `Settings > Platform Integration > Open API`, copy the Controller Interface Access Address, Client ID, Client Secret and Omada ID, then set `STOPLIGA_ROUTER_TYPE=omada`.
+
+For OPNsense, set `STOPLIGA_ROUTER_TYPE=opnsense`, then configure `OPNSENSE_HOST`, `OPNSENSE_API_KEY`, and `OPNSENSE_API_SECRET`. StopLiga keeps a managed alias in sync and toggles the existing firewall rule whose description matches `STOPLIGA_ROUTE_NAME`. Legacy compatibility with `STOPLIGA_FIREWALL_BACKEND=opnsense` is still supported.
+
+## What Happens Automatically (UniFi)
 
 Once the container starts:
 
-1. StopLiga downloads the current blocking status.
+1. StopLiga resolves the current blocking status.
 2. StopLiga downloads the current IP/CIDR list.
 3. StopLiga looks for the UniFi route named by `STOPLIGA_ROUTE_NAME`.
 4. If the route does not exist, StopLiga creates it automatically.
-5. StopLiga enables or disables the route to match the published blocking status.
-6. StopLiga updates the destination list if it changed.
+5. StopLiga compares the published destinations against the UniFi route.
+6. StopLiga enables or disables the route to match the published blocking status.
+7. StopLiga updates the destination list if it changed.
 
 Normal automatic behavior:
 
 - if the route already exists, StopLiga updates it
-- if the route does not exist, StopLiga creates it using the first available `vpn-client` network
+- if the route does not exist, StopLiga creates it
+- it uses the first available UniFi `vpn-client` network
 - it applies the route to `ALL_CLIENTS` when UniFi accepts that target
 
 Fallback behavior:
@@ -93,174 +116,92 @@ Fallback behavior:
 - if UniFi rejects `ALL_CLIENTS`, StopLiga retries with one detected client device
 - that degraded route stays disabled until you review it
 
-### VPN Client Network Required
+## What Happens Automatically (OPNsense)
+
+Once the container starts in OPNsense mode:
+
+1. StopLiga resolves the current blocking status.
+2. StopLiga downloads the current IP/CIDR list.
+3. StopLiga syncs the managed alias contents with the published destinations.
+4. StopLiga enables or disables the existing firewall rule to match the published blocking status.
+
+## VPN Client Network Required
 
 StopLiga can create the policy route automatically, but UniFi must already have at least one VPN Client network.
 
 - StopLiga looks for UniFi networks whose purpose is `vpn-client`.
 - If one exists, StopLiga picks the first available one automatically.
-- If no `vpn-client` network exists, StopLiga stops and logs a clear error.
+- If no `vpn-client` network exists, StopLiga stops and logs a clear error with a link to this section.
 - After you create a VPN Client network in UniFi, restart the container.
 
----
+## Configuration
 
-## OPNsense
+These are the same values that appear in [`.env.example`](.env.example).
 
-### How It Works
+For most users, leave everything except the credentials for their selected backend unchanged.
 
-StopLiga manages two OPNsense objects:
-
-| Object | Controlled by | Named by |
-| --- | --- | --- |
-| **Firewall alias** | StopLiga — keeps IPs current | `OPNSENSE_ALIAS_NAME` |
-| **Firewall rule** | StopLiga — enables or disables it | `STOPLIGA_ROUTE_NAME` |
-
-```
-OPNSENSE_ALIAS_NAME  →  alias (IP list)  ←  StopLiga updates IPs here
-                              ↑
-STOPLIGA_ROUTE_NAME  →  rule (destination = alias, gateway = VPN)  ←  StopLiga toggles enabled
-```
-
-When La Liga is blocking: rule is **enabled** → traffic to the alias IPs goes through the VPN gateway.  
-When La Liga is not blocking: rule is **disabled** → rule is skipped, traffic uses the default route.
-
-The alias always contains the current IP list regardless of the rule state.
-
-### Requirements
-
-- OPNsense reachable from the container over HTTPS
-- An OPNsense API key and secret with **Firewall: Aliases** and **Firewall: Rules** privileges
-- A firewall rule in OPNsense created manually once (StopLiga will enable/disable it)
-
-### OPNsense API Key Setup
-
-1. Log in to OPNsense as administrator.
-2. Go to **System → Access → Users**.
-3. Select a user or create a new one dedicated to StopLiga.
-4. Under *Effective Privileges*, add:
-   - `Firewall: Aliases`
-   - `Firewall: Alias: Edit`
-   - `Firewall: Rules`
-   - `Firewall: Rules: [new]`
-   - `Firewall: Rules: Edit`
-   - `System: Advanced: Firewall and NAT`
-5. Scroll to the **Commands** section → click **Create and Download API key** to generate a new key.
-6. Copy the **Key** and **Secret** — from the downloaded file.
-
-### Firewall Rule Setup
-
-Create the rule once in **Firewall → Rules**. StopLiga finds it by its `Description` field and enables or disables it on each sync.
-
-Required fields:
-
-| Field | Value |
-| --- | --- |
-| **Description** | must match `STOPLIGA_ROUTE_NAME` exactly (e.g. `VPN_LIGA`) |
-| **Action** | Pass |
-| **Interface** | interface your clients use (e.g. LAN) |
-| **Direction** | In |
-| **Destination** | the alias named by `OPNSENSE_ALIAS_NAME` |
-| **Gateway** | your VPN gateway |
-
-Place the rule above any default gateway rules. Save — StopLiga manages the enabled state via API from this point on.
-
-StopLiga creates the alias automatically on first run if it does not exist yet.
-
-### Quick Start (OPNsense)
-
-```bash
-cp .env.example .env
-# Edit .env with your OPNsense credentials (see below)
-docker compose pull
-docker compose up -d
-docker compose logs -f
-```
-
-### Minimal `.env` (OPNsense)
+### Core Settings
 
 ```dotenv
-STOPLIGA_FIREWALL_BACKEND=opnsense
-OPNSENSE_HOST=192.168.1.1
-OPNSENSE_API_KEY=replace-me
-OPNSENSE_API_SECRET=replace-me
-OPNSENSE_VERIFY_TLS=false
-OPNSENSE_ALIAS_NAME=laliga_ips
-STOPLIGA_ROUTE_NAME=StopLiga
+UNIFI_HOST=10.0.1.1
+UNIFI_API_KEY=replace-me
+STOPLIGA_ROUTER_TYPE=unifi
+UNIFI_SITE=default
+UNIFI_VERIFY_TLS=false
 STOPLIGA_RUN_MODE=loop
 STOPLIGA_SYNC_INTERVAL_SECONDS=300
+STOPLIGA_ROUTE_NAME=StopLiga
+STOPLIGA_MAX_RESPONSE_BYTES=2097152
+```
+
+### Omada Controller Settings
+
+```dotenv
+STOPLIGA_ROUTER_TYPE=omada
+STOPLIGA_OMADA_BASE_URL=https://omada-controller.example
+STOPLIGA_OMADA_CLIENT_ID=replace-me
+STOPLIGA_OMADA_CLIENT_SECRET=replace-me
+STOPLIGA_OMADA_OMADAC_ID=replace-me
+STOPLIGA_OMADA_SITE=Default
+STOPLIGA_OMADA_TARGET_TYPE=vpn
+STOPLIGA_OMADA_TARGET=WG Main
+STOPLIGA_OMADA_VERIFY_TLS=true
+# Optional:
+# STOPLIGA_OMADA_SOURCE_NETWORKS=LAN,IoT
+# STOPLIGA_OMADA_GROUP_SIZE=16
 ```
 
 | Variable | What it is for |
 | --- | --- |
-| `STOPLIGA_FIREWALL_BACKEND` | Set to `opnsense` to use OPNsense instead of UniFi |
-| `OPNSENSE_HOST` | IP or hostname of your OPNsense router |
-| `OPNSENSE_API_KEY` | OPNsense API key |
-| `OPNSENSE_API_SECRET` | OPNsense API secret |
-| `OPNSENSE_VERIFY_TLS` | Set `false` for self-signed certs, common on home setups |
-| `OPNSENSE_ALIAS_NAME` | Name of the alias StopLiga will create and populate with IPs. Defaults to `STOPLIGA_ROUTE_NAME` sanitized |
-| `STOPLIGA_ROUTE_NAME` | Exact description of the firewall rule StopLiga will enable or disable |
-| `STOPLIGA_RUN_MODE` | `loop` keeps the container running and syncing continuously |
-| `STOPLIGA_SYNC_INTERVAL_SECONDS` | Sync interval in seconds. `300` = every 5 minutes |
-
-Secrets can also be loaded from files using `OPNSENSE_API_KEY_FILE` and `OPNSENSE_API_SECRET_FILE`.
-
-### What Happens Automatically (OPNsense)
-
-Once the container starts:
-
-1. StopLiga downloads the current blocking status.
-2. StopLiga downloads the current IP/CIDR list.
-3. StopLiga searches OPNsense for the alias named by `OPNSENSE_ALIAS_NAME`.
-4. If the alias does not exist, StopLiga creates it and populates it with the IP list.
-5. If the alias exists, StopLiga updates its IPs if they changed.
-6. StopLiga searches for the firewall rule whose description matches `STOPLIGA_ROUTE_NAME`.
-7. StopLiga enables or disables that rule to match the published blocking status.
-
----
-
-## Configuration Reference
-
-### Firewall Backend
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `STOPLIGA_FIREWALL_BACKEND` | `unifi` | `unifi` or `opnsense` |
-
-### UniFi Settings
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `UNIFI_HOST` | — | UniFi router or controller IP/hostname |
-| `UNIFI_API_KEY` | — | Local UniFi Network API key |
-| `UNIFI_SITE` | `default` | UniFi site name |
-| `UNIFI_PORT` | `443` | UniFi HTTPS port |
-| `UNIFI_VERIFY_TLS` | `true` | Set `false` for self-signed certs |
-| `UNIFI_CA_FILE` | — | Path to custom CA bundle |
+| `STOPLIGA_OMADA_BASE_URL` | Omada Controller Interface Access Address |
+| `STOPLIGA_OMADA_CLIENT_ID` | Omada Open API client ID |
+| `STOPLIGA_OMADA_CLIENT_SECRET` | Omada Open API client secret |
+| `STOPLIGA_OMADA_OMADAC_ID` | Omada controller/cloud ID |
+| `STOPLIGA_OMADA_SITE` | Omada site name or site ID |
+| `STOPLIGA_OMADA_TARGET_TYPE` | Egress target kind: `wan` or `vpn` |
+| `STOPLIGA_OMADA_TARGET` | Exact WAN/VPN name or ID to route through |
+| `STOPLIGA_OMADA_SOURCE_NETWORKS` | Optional comma-separated list of LAN names/IDs. If unset, StopLiga uses all LAN networks in the site |
+| `STOPLIGA_OMADA_GROUP_SIZE` | Max IPv4 subnets per managed Omada IP Group. `16` is a conservative default |
 
 ### OPNsense Settings
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `OPNSENSE_HOST` | — | OPNsense IP/hostname |
-| `OPNSENSE_API_KEY` | — | OPNsense API key |
-| `OPNSENSE_API_KEY_FILE` | — | Path to file containing the API key |
-| `OPNSENSE_API_SECRET` | — | OPNsense API secret |
-| `OPNSENSE_API_SECRET_FILE` | — | Path to file containing the API secret |
-| `OPNSENSE_VERIFY_TLS` | `true` | Set `false` for self-signed certs |
-| `OPNSENSE_CA_FILE` | — | Path to custom CA bundle |
-| `OPNSENSE_ALIAS_NAME` | *(route_name sanitized)* | Name of the alias to create and populate with IPs |
+```dotenv
+STOPLIGA_ROUTER_TYPE=opnsense
+OPNSENSE_HOST=fw.example.local
+OPNSENSE_API_KEY=replace-me
+OPNSENSE_API_SECRET=replace-me
+OPNSENSE_VERIFY_TLS=true
+# Optional:
+# OPNSENSE_ALIAS_NAME=StopLiga
+```
 
-### Common Settings
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `STOPLIGA_RUN_MODE` | `once` | `loop` or `once` |
-| `STOPLIGA_SYNC_INTERVAL_SECONDS` | `300` | Seconds between syncs in loop mode |
-| `STOPLIGA_ROUTE_NAME` | `StopLiga` | Route/alias name to create or manage |
-| `STOPLIGA_DRY_RUN` | `false` | Compute changes without writing |
-| `STOPLIGA_MAX_DESTINATIONS` | `2048` | Safety ceiling for IP entries |
-| `STOPLIGA_MAX_RESPONSE_BYTES` | `2097152` | Safety limit for HTTP response bodies |
-| `STOPLIGA_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| Variable | What it is for |
+| --- | --- |
+| `OPNSENSE_HOST` | OPNsense firewall IP or hostname |
+| `OPNSENSE_API_KEY` | OPNsense API key |
+| `OPNSENSE_API_SECRET` | OPNsense API secret |
+| `OPNSENSE_VERIFY_TLS` | Whether StopLiga should verify the OPNsense HTTPS certificate |
+| `OPNSENSE_ALIAS_NAME` | Optional managed alias name. If unset, StopLiga derives one from `STOPLIGA_ROUTE_NAME` |
 
 ### Optional Notifications
 
@@ -278,20 +219,21 @@ Once the container starts:
 
 Telegram options:
 
-- `STOPLIGA_TELEGRAM_CHAT_ID`: send to a private chat
-- `STOPLIGA_TELEGRAM_GROUP_ID`: send to a Telegram group or supergroup
-- `STOPLIGA_TELEGRAM_TOPIC_ID`: optional forum topic id inside that group
+- `STOPLIGA_TELEGRAM_CHAT_ID`: send to a private chat or to any chat id you already use today
+- `STOPLIGA_TELEGRAM_GROUP_ID`: explicit target for a Telegram group or supergroup
+- `STOPLIGA_TELEGRAM_TOPIC_ID`: optional forum topic id inside that Telegram group
 - set either `STOPLIGA_TELEGRAM_CHAT_ID` or `STOPLIGA_TELEGRAM_GROUP_ID`, not both
+- if `STOPLIGA_TELEGRAM_TOPIC_ID` is set, StopLiga sends the message with Telegram `message_thread_id`
 
 ## Sync Cycle
 
 With `STOPLIGA_SYNC_INTERVAL_SECONDS=300`, StopLiga runs a full sync every 5 minutes:
 
-1. download the current blocking status
+1. resolve the current blocking status
 2. download the current IP/CIDR list
-3. compare that feed against the current firewall state
-4. enable or disable the route/alias
-5. update the IP list if it changed
+3. compare that feed against the managed router object for the selected driver
+4. enable or disable the route or rule
+5. update the managed destination list if it changed
 
 ## Docker Compose
 
@@ -307,9 +249,9 @@ services:
       - .env
     volumes:
       - ./data:/data
-    healthcheck:
-      disable: true
 ```
+
+The image already includes a built-in Docker healthcheck, so Compose will keep it enabled by default.
 
 Useful commands:
 
@@ -334,5 +276,16 @@ docker run -d \
 
 ## Sources
 
-- Data source: [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list)
-- Thanks to the maintainers of that repository for publishing and keeping the feed updated
+- Live block status: [`blocked.dns.hayahora.futbol`](https://hayahora.futbol/)
+- Destination IP list: [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list)
+- Thanks to the maintainers of both feeds for publishing and keeping the data available
+
+## Extensibility
+
+The sync service is structured around router drivers.
+
+- `unifi` is the built-in driver today
+- `omada` is built in for Omada Controller Open API
+- `opnsense` is built in for alias plus firewall-rule synchronization
+- `STOPLIGA_ROUTER_TYPE` selects the driver
+- the core service, feed loading, state handling and notifications are shared so new router integrations can be added without rewriting the sync loop

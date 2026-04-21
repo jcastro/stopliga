@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 from urllib.parse import urlparse
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -328,6 +328,14 @@ class TestServer:
             self.tempdir.cleanup()
 
 
+class SingleIterationStopEvent:
+    def is_set(self) -> bool:
+        return False
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return True
+
+
 class ServiceIntegrationTests(unittest.TestCase):
     def make_config(self, *, state_dir: str, **overrides: Any) -> Config:
         base = {
@@ -393,6 +401,24 @@ class ServiceIntegrationTests(unittest.TestCase):
             payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "error")
             self.assertEqual(payload["consecutive_failures"], 1)
+
+    def test_feed_failure_in_loop_mode_counts_once_per_iteration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = self.make_config(
+                state_dir=tmpdir,
+                run_mode="loop",
+                interval_seconds=1,
+                status_url="http://127.0.0.1:1/feed/status.json",
+                ip_list_url="http://127.0.0.1:1/feed/ip_list.txt",
+                request_timeout=0.2,
+                retries=1,
+            )
+            exit_code = StopLigaService(config).run_loop(SingleIterationStopEvent())
+            self.assertEqual(exit_code, 0)
+            payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "error")
+            self.assertEqual(payload["consecutive_failures"], 1)
+            self.assertTrue(payload["last_sync_id"])
 
     def test_local_mode_updates_linked_traffic_matching_list(self) -> None:
         state = FakeState(
@@ -717,6 +743,10 @@ class ServiceIntegrationTests(unittest.TestCase):
             result = StopLigaService(config).run_once()
             self.assertTrue(result.created)
             self.assertEqual(result.route_id, "created-1")
+            self.assertEqual(
+                state.request_log.count(f"GET /proxy/network/v2/api/site/{state.network_site_name}/trafficroutes"),
+                2,
+            )
 
     def test_bootstrap_guard_is_persisted_before_state_write(self) -> None:
         state = FakeState(
@@ -1338,7 +1368,7 @@ class OPNsenseTests(unittest.TestCase):
         toggle_rule.assert_called_once_with("rule-1", True)
         apply_filter.assert_called_once_with()
 
-    def test_service_dispatches_to_opnsense_backend(self) -> None:
+    def test_service_dispatches_to_opnsense_driver(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = self.make_opnsense_config(
                 request_timeout=5.0,
@@ -1371,7 +1401,7 @@ class OPNsenseTests(unittest.TestCase):
 
             with (
                 patch("stopliga.service.load_feed_snapshot", return_value=feed_snapshot),
-                patch("stopliga.service.sync_opnsense", return_value=expected_result) as sync_opnsense_mock,
+                patch("stopliga.routers.opnsense.sync_opnsense", return_value=expected_result) as sync_opnsense_mock,
             ):
                 result = StopLigaService(config).run_once()
 

@@ -30,6 +30,32 @@ class FeedParsingTests(unittest.TestCase):
         self.assertFalse(value_b)
         self.assertTrue(value_c)
 
+    def test_parse_status_payload_supports_hayahora_history_json(self) -> None:
+        payload = """
+        {
+          "lastUpdate": "2026-04-21 17:44:56",
+          "data": [
+            {
+              "ip": "104.16.93.114",
+              "stateChanges": [
+                {"timestamp": "2026-04-21T17:00:00Z", "state": false},
+                {"timestamp": "2026-04-21T17:05:00Z", "state": true}
+              ]
+            },
+            {
+              "ip": "104.16.93.114",
+              "stateChanges": [
+                {"timestamp": "2026-04-21T17:10:00Z", "state": false}
+              ]
+            }
+          ]
+        }
+        """
+        parsed, is_blocked = parse_status_payload(payload)
+        self.assertTrue(is_blocked)
+        self.assertEqual(parsed["source"], "hayahora-history-json")
+        self.assertEqual(parsed["activeIpCount"], 1)
+
     def test_parse_ip_list_dedupes_and_sorts(self) -> None:
         raw = """
         # comment
@@ -183,6 +209,24 @@ class FeedLoadingTests(unittest.TestCase):
                 "https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
             ],
         )
+
+    def test_load_feed_snapshot_can_resolve_status_from_dns(self) -> None:
+        config = Config(
+            status_url="dns://blocked.dns.hayahora.futbol",
+            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
+            retries=1,
+        )
+
+        with (
+            patch("stopliga.feed.resolve_dns_addresses", return_value=["104.21.0.97", "172.67.205.181"]) as dns_mock,
+            patch("stopliga.feed.fetch_text", return_value="192.0.2.1\n"),
+        ):
+            snapshot = load_feed_snapshot(config)
+
+        self.assertTrue(snapshot.is_blocked)
+        self.assertEqual(snapshot.destinations, ["192.0.2.1"])
+        self.assertEqual(snapshot.raw_status["source"], "dns")
+        dns_mock.assert_called_once_with("blocked.dns.hayahora.futbol", retries=1)
 
 
 class RoutePayloadTests(unittest.TestCase):

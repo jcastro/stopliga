@@ -16,7 +16,16 @@ from urllib.parse import quote, urlparse, urlunparse
 from .errors import InvalidFeedError, NetworkError
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot
-from .utils import canonicalize_ip_token, make_ssl_context, read_limited, sleep_with_backoff, stable_hash, sort_ip_tokens
+from .utils import (
+    canonicalize_ip_token,
+    make_ssl_context,
+    read_limited,
+    sleep_with_backoff,
+    stable_hash,
+    sort_ip_tokens,
+)
+
+DEFAULT_USER_AGENT = "stopliga/0.1.12"
 
 
 @dataclass(frozen=True)
@@ -61,7 +70,9 @@ def parse_status_payload(raw_text: str) -> tuple[dict[str, Any], bool]:
     hayahora_status = _parse_hayahora_status_payload(payload)
     if hayahora_status is not None:
         return hayahora_status
-    raise InvalidFeedError("Status feed does not expose isBlocked, blocked, state or a supported hayahora history payload")
+    raise InvalidFeedError(
+        "Status feed does not expose isBlocked, blocked, state or a supported hayahora history payload"
+    )
 
 
 def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], bool] | None:
@@ -153,7 +164,13 @@ def fetch_text(
     safe_url = _safe_log_url(url)
 
     for attempt in range(1, max(1, retries) + 1):
-        request = urllib.request.Request(url, headers={"Accept": "application/json, text/plain;q=0.9, */*;q=0.1"})
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json, text/plain;q=0.9, */*;q=0.1",
+                "User-Agent": DEFAULT_USER_AGENT,
+            },
+        )
         try:
             with opener.open(request, timeout=timeout) as response:
                 try:
@@ -377,7 +394,13 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
     if source_revision:
         log_event(logger, logging.INFO, "feed_revision_resolved", revision=source_revision)
     elif config.status_url != status_url or config.ip_list_url != ip_list_url:
-        log_event(logger, logging.WARNING, "feed_revision_resolution_skipped", status_url=config.status_url, ip_list_url=config.ip_list_url)
+        log_event(
+            logger,
+            logging.WARNING,
+            "feed_revision_resolution_skipped",
+            status_url=config.status_url,
+            ip_list_url=config.ip_list_url,
+        )
     status_config = config if status_url == config.status_url else replace(config, status_url=status_url)
     raw_status, is_blocked = load_status_snapshot(status_config)
 

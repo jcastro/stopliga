@@ -20,7 +20,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 
 RUN pip install --upgrade pip==26.0.1 setuptools==82.0.1 wheel==0.46.3 \
-    && pip install .
+    && pip install --no-cache-dir --no-deps .
 
 
 FROM ${PYTHON_BASE} AS runtime
@@ -54,6 +54,12 @@ RUN groupadd --system --gid 10001 stopliga \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --chmod=0555 docker/entrypoint.py /usr/local/bin/docker-entrypoint.py
+
+RUN rm -rf /opt/venv/lib/python*/site-packages/pip* \
+    /opt/venv/lib/python*/site-packages/setuptools* \
+    /opt/venv/lib/python*/site-packages/wheel* \
+    /opt/venv/bin/pip /opt/venv/bin/pip3 /opt/venv/bin/pip3.* \
+    && find /opt/venv -type d -name '__pycache__' -prune -exec rm -rf {} +
 
 WORKDIR /app
 VOLUME ["/data"]

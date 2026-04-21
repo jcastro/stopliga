@@ -6,7 +6,15 @@ import logging
 from threading import Event
 from uuid import uuid4
 
-from .errors import AuthenticationError, ConfigError, PartialUpdateError, ReconciliationRequiredError, StateError, StopLigaError, UnsupportedRouteShapeError
+from .errors import (
+    AuthenticationError,
+    ConfigError,
+    PartialUpdateError,
+    ReconciliationRequiredError,
+    StateError,
+    StopLigaError,
+    UnsupportedRouteShapeError,
+)
 from .feed import load_feed_snapshot
 from .logging_utils import log_context, log_event
 from .models import Config, FeedSnapshot, StateSnapshot, SyncResult
@@ -15,7 +23,13 @@ from .routers.factory import create_router_driver
 from .state import StateStore, utcnow_iso
 
 
-FATAL_LOOP_ERRORS = (AuthenticationError, ConfigError, ReconciliationRequiredError, StateError, UnsupportedRouteShapeError)
+FATAL_LOOP_ERRORS = (
+    AuthenticationError,
+    ConfigError,
+    ReconciliationRequiredError,
+    StateError,
+    UnsupportedRouteShapeError,
+)
 
 
 class StopLigaService:
@@ -34,7 +48,9 @@ class StopLigaService:
             try:
                 bad_path = self.state_store.quarantine_invalid_file()
             except StateError as quarantine_exc:
-                log_event(self.logger, logging.WARNING, "state_quarantine_failed", error=quarantine_exc, original_error=exc)
+                log_event(
+                    self.logger, logging.WARNING, "state_quarantine_failed", error=quarantine_exc, original_error=exc
+                )
             else:
                 log_event(
                     self.logger,
@@ -56,7 +72,13 @@ class StopLigaService:
             try:
                 bad_path = self.bootstrap_guard_store.quarantine_invalid_file()
             except StateError as quarantine_exc:
-                log_event(self.logger, logging.WARNING, "bootstrap_guard_quarantine_failed", error=quarantine_exc, original_error=exc)
+                log_event(
+                    self.logger,
+                    logging.WARNING,
+                    "bootstrap_guard_quarantine_failed",
+                    error=quarantine_exc,
+                    original_error=exc,
+                )
             else:
                 log_event(
                     self.logger,
@@ -73,10 +95,7 @@ class StopLigaService:
         if guard:
             return guard
         legacy = legacy_state if legacy_state is not None else self._load_runtime_state()
-        if any(
-            legacy.get(key)
-            for key in ("bootstrap_source", "bootstrap_network_id", "bootstrap_target_macs")
-        ):
+        if any(legacy.get(key) for key in ("bootstrap_source", "bootstrap_network_id", "bootstrap_target_macs")):
             return legacy
         return {}
 
@@ -163,7 +182,9 @@ class StopLigaService:
             route_name=self.config.route_name,
             site=self.config.site,
             last_attempt_at=now,
-            last_success_at=now if status in {"success", "dry_run"} else self._optional_str(previous, "last_success_at"),
+            last_success_at=now
+            if status in {"success", "dry_run"}
+            else self._optional_str(previous, "last_success_at"),
             last_error=error,
             last_mode=result.mode if result else self._optional_str(previous, "last_mode"),
             last_sync_id=sync_id or self._optional_str(previous, "last_sync_id"),
@@ -183,8 +204,12 @@ class StopLigaService:
             reconciliation_required=reconciliation_required,
             last_is_blocked=result.is_blocked if result else self._optional_bool(previous, "last_is_blocked"),
             bootstrap_source=result.bootstrap_source if result else self._optional_str(previous, "bootstrap_source"),
-            bootstrap_network_id=result.bootstrap_network_id if result else self._optional_str(previous, "bootstrap_network_id"),
-            bootstrap_target_macs=result.bootstrap_target_macs if result else self._string_tuple(previous, "bootstrap_target_macs"),
+            bootstrap_network_id=result.bootstrap_network_id
+            if result
+            else self._optional_str(previous, "bootstrap_network_id"),
+            bootstrap_target_macs=result.bootstrap_target_macs
+            if result
+            else self._string_tuple(previous, "bootstrap_target_macs"),
         )
         self.state_store.write(snapshot)
 
@@ -221,8 +246,7 @@ class StopLigaService:
     @staticmethod
     def _requires_reconciliation(exc: StopLigaError, *, reconciliation_pending: bool) -> bool:
         return reconciliation_pending or (
-            isinstance(exc, PartialUpdateError)
-            and (not exc.rollback_attempted or not exc.rollback_completed)
+            isinstance(exc, PartialUpdateError) and (not exc.rollback_attempted or not exc.rollback_completed)
         )
 
     def run_once(self) -> SyncResult:
@@ -291,7 +315,9 @@ class StopLigaService:
                         rollback_attempted=exc.rollback_attempted if isinstance(exc, PartialUpdateError) else False,
                         rollback_completed=exc.rollback_completed if isinstance(exc, PartialUpdateError) else False,
                         rollback_error=exc.rollback_error if isinstance(exc, PartialUpdateError) else None,
-                        reconciliation_required=self._requires_reconciliation(exc, reconciliation_pending=reconciliation_pending),
+                        reconciliation_required=self._requires_reconciliation(
+                            exc, reconciliation_pending=reconciliation_pending
+                        ),
                         sync_id=sync_id,
                         previous_state=previous_runtime_state,
                     )

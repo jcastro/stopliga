@@ -27,6 +27,15 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.20,<1.21",
+  "pip-audit>=2.10,<2.11",
+  "pytest>=9,<10",
+  "pytest-cov>=7,<8",
+  "ruff>=0.15,<0.16",
+]
+
 [project.scripts]
 stopliga = "stopliga.cli:main"
 
@@ -39,6 +48,23 @@ where = ["src"]
 [tool.ruff]
 target-version = "py311"
 line-length = 120
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = [
+  "-q",
+  "--cov=src/stopliga",
+  "--cov-report=term-missing",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/stopliga"]
+
+[tool.coverage.report]
+skip_covered = true
+show_missing = true
 
 [tool.mypy]
 python_version = "3.11"

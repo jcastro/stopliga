@@ -12,10 +12,28 @@ import urllib.error
 import urllib.request
 from typing import Any, Sequence
 
-from ..errors import AuthenticationError, ConfigError, DiscoveryError, DuplicateRouteError, NetworkError, PartialUpdateError, RemoteRequestError, RouteNotFoundError, StopLigaError, UnsupportedRouteShapeError
+from ..errors import (
+    AuthenticationError,
+    ConfigError,
+    DiscoveryError,
+    DuplicateRouteError,
+    NetworkError,
+    PartialUpdateError,
+    RemoteRequestError,
+    RouteNotFoundError,
+    StopLigaError,
+    UnsupportedRouteShapeError,
+)
 from ..logging_utils import log_event
 from ..models import BootstrapPreview, Config, FeedSnapshot, SiteContext, SyncResult, UpdatePlan
-from ..utils import canonicalize_ip_token, make_ssl_context, read_limited, shorten_json, sleep_with_backoff, sort_ip_tokens
+from ..utils import (
+    canonicalize_ip_token,
+    make_ssl_context,
+    read_limited,
+    shorten_json,
+    sleep_with_backoff,
+    sort_ip_tokens,
+)
 from .base import BootstrapGuardClearer, BootstrapGuardWriter, RouterDriver
 
 
@@ -341,9 +359,7 @@ def build_route_update_template(route_record: dict[str, Any]) -> dict[str, Any]:
     destination = route_record.get("destination")
     if isinstance(destination, dict):
         destination_payload = {
-            key: copy.deepcopy(value)
-            for key, value in destination.items()
-            if key in DESTINATION_UPDATE_FIELDS
+            key: copy.deepcopy(value) for key, value in destination.items() if key in DESTINATION_UPDATE_FIELDS
         }
         if destination_payload:
             payload["destination"] = destination_payload
@@ -496,7 +512,9 @@ class UniFiClient:
                         body = body_bytes.decode("utf-8", errors="replace")
                     self._update_csrf_token(exc.headers)
                     if exc.code in {401, 403}:
-                        raise AuthenticationError(f"Unauthorized for {method_name} {path}: check UNIFI_API_KEY") from exc
+                        raise AuthenticationError(
+                            f"Unauthorized for {method_name} {path}: check UNIFI_API_KEY"
+                        ) from exc
                     if should_retry and exc.code in {429, 500, 502, 503, 504} and attempt < attempts:
                         log_event(
                             self.logger,
@@ -760,12 +778,16 @@ class LinkedTrafficMatchingListHelper:
                 continue
         raise DiscoveryError(f"Unable to read linked traffic matching list {list_id}")
 
-    def build_update(self, list_id: str, desired_ips: Sequence[str]) -> tuple[str, dict[str, Any], list[str], list[str]]:
+    def build_update(
+        self, list_id: str, desired_ips: Sequence[str]
+    ) -> tuple[str, dict[str, Any], list[str], list[str]]:
         endpoint, current = self.get(list_id)
         list_type = current.get("type")
         current_items = current.get("items")
         if list_type not in {"IPV4_ADDRESSES", "IPV6_ADDRESSES"}:
-            raise UnsupportedRouteShapeError(f"Linked traffic matching list {list_id} has unsupported type {list_type!r}")
+            raise UnsupportedRouteShapeError(
+                f"Linked traffic matching list {list_id} has unsupported type {list_type!r}"
+            )
         if not isinstance(current_items, list):
             raise UnsupportedRouteShapeError(f"Linked traffic matching list {list_id} does not expose items[]")
         expected_version = 4 if list_type == "IPV4_ADDRESSES" else 6
@@ -880,13 +902,23 @@ class BaseRouteBackend:
         if override != "auto":
             if override == "linked_list.items":
                 if not self._detect_linked_list_id(route_record):
-                    raise UnsupportedRouteShapeError("destination_field=linked_list.items but route has no linked list ID")
+                    raise UnsupportedRouteShapeError(
+                        "destination_field=linked_list.items but route has no linked list ID"
+                    )
                 return override
             if not allow_missing and get_nested(route_record, override) is None:
-                raise UnsupportedRouteShapeError(f"Configured destination field {override!r} is missing in route payload")
+                raise UnsupportedRouteShapeError(
+                    f"Configured destination field {override!r} is missing in route payload"
+                )
             return override
 
-        for path in ("ip_addresses", "destinations", "destination.ip_addresses", "destination.ips", "destination.items"):
+        for path in (
+            "ip_addresses",
+            "destinations",
+            "destination.ip_addresses",
+            "destination.ips",
+            "destination.items",
+        ):
             if get_nested(route_record, path) is not None:
                 return path
         if self._detect_linked_list_id(route_record):
@@ -927,7 +959,9 @@ class BaseRouteBackend:
         changed_fields = [path] if current_destinations != list(desired_ips) else []
         return payload, current_destinations, changed_fields
 
-    def build_plan(self, endpoint: str, route_record: dict[str, Any], desired_ips: Sequence[str], desired_enabled: bool) -> UpdatePlan:
+    def build_plan(
+        self, endpoint: str, route_record: dict[str, Any], desired_ips: Sequence[str], desired_enabled: bool
+    ) -> UpdatePlan:
         route_payload_raw, current_destinations, route_changed_fields = self._build_route_payload_for_destinations(
             route_record,
             desired_ips,
@@ -994,7 +1028,9 @@ class BaseRouteBackend:
             self.linked_lists.verify(linked_list_id, desired_ips)
             return
 
-        _, current_destinations, _ = self._build_route_payload_for_destinations(route_record, desired_ips, allow_missing=False)
+        _, current_destinations, _ = self._build_route_payload_for_destinations(
+            route_record, desired_ips, allow_missing=False
+        )
         if current_destinations != list(desired_ips):
             raise RemoteRequestError(f"Route {route_label(route_record)!r} did not keep the expected destination list")
 
@@ -1054,7 +1090,9 @@ def choose_existing_route_backend(
             if not matches:
                 continue
             if len(matches) > 1:
-                raise DuplicateRouteError(f"Route {route_name_value!r} matched multiple entries in backend {backend.backend_name}")
+                raise DuplicateRouteError(
+                    f"Route {route_name_value!r} matched multiple entries in backend {backend.backend_name}"
+                )
             route_record = matches[0]
             log_event(
                 logging.getLogger("stopliga.route"),
@@ -1174,7 +1212,9 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
         rollback_attempted = False
         rollback_completed = False
         rollback_error: str | None = None
-        rollback_steps = [rollback_operations[stage] for stage in reversed(completed_steps) if stage in rollback_operations]
+        rollback_steps = [
+            rollback_operations[stage] for stage in reversed(completed_steps) if stage in rollback_operations
+        ]
         if rollback_steps:
             rollback_attempted = True
             try:
@@ -1187,7 +1227,9 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
                         route_id=plan.route_id,
                         backend=plan.backend_name,
                     )
-                    client.request(method, endpoint, json_body=payload, expected_statuses=(200, 201, 204), retriable=False)
+                    client.request(
+                        method, endpoint, json_body=payload, expected_statuses=(200, 201, 204), retriable=False
+                    )
                 rollback_completed = True
                 log_event(
                     logger,
@@ -1291,7 +1333,10 @@ class UniFiRouterDriver(RouterDriver):
         if not self._bootstrap_requires_manual_review(str(state.get("bootstrap_source") or "")):
             return False
         route_network_id = route_record.get("network_id")
-        if not isinstance(route_network_id, str) or route_network_id.strip() != str(state.get("bootstrap_network_id", "")).strip():
+        if (
+            not isinstance(route_network_id, str)
+            or route_network_id.strip() != str(state.get("bootstrap_network_id", "")).strip()
+        ):
             return False
         saved_macs = tuple(sorted(item.lower() for item in self._string_tuple(state, "bootstrap_target_macs")))
         return saved_macs == self._route_target_macs(route_record)
@@ -1347,7 +1392,9 @@ class UniFiRouterDriver(RouterDriver):
             current_destinations=len(plan.current_destinations),
             desired_destinations=len(plan.desired_destinations),
             route_changed_fields=",".join(plan.route_changed_fields) if plan.route_changed_fields else "",
-            linked_list_changed_fields=",".join(plan.linked_list_changed_fields) if plan.linked_list_changed_fields else "",
+            linked_list_changed_fields=",".join(plan.linked_list_changed_fields)
+            if plan.linked_list_changed_fields
+            else "",
         )
 
         if added or removed:
@@ -1378,9 +1425,9 @@ class UniFiRouterDriver(RouterDriver):
         client: UniFiClient,
     ) -> SyncResult:
         desired_enabled = feed_snapshot.desired_enabled
-        pending_manual_review = self._bootstrap_requires_manual_review(bootstrap_source) or self._is_pending_auto_bootstrap(
-            route_record, previous_guard
-        )
+        pending_manual_review = self._bootstrap_requires_manual_review(
+            bootstrap_source
+        ) or self._is_pending_auto_bootstrap(route_record, previous_guard)
         if pending_manual_review:
             if desired_enabled:
                 log_event(
@@ -1492,7 +1539,9 @@ class UniFiRouterDriver(RouterDriver):
         bootstrap_target_macs: tuple[str, ...] = ()
 
         try:
-            backend, endpoint, route_record = choose_existing_route_backend(client, site_context, self.config.route_name)
+            backend, endpoint, route_record = choose_existing_route_backend(
+                client, site_context, self.config.route_name
+            )
         except RouteNotFoundError:
             bootstrap_backend, preview = self._bootstrap_route(client, feed_snapshot.destinations)
             log_event(
@@ -1504,7 +1553,9 @@ class UniFiRouterDriver(RouterDriver):
                 dry_run=self.config.dry_run,
             )
             if self.config.dry_run:
-                preview_enabled = preview.payload.get("enabled") if isinstance(preview.payload.get("enabled"), bool) else None
+                preview_enabled = (
+                    preview.payload.get("enabled") if isinstance(preview.payload.get("enabled"), bool) else None
+                )
                 return SyncResult(
                     mode="local",
                     route_name=self.config.route_name,

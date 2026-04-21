@@ -26,7 +26,15 @@ from stopliga.models import Config, FeedSnapshot, SyncResult  # noqa: E402
 from stopliga.opnsense import parse_alias_content, sync_opnsense  # noqa: E402
 from stopliga.service import StopLigaService  # noqa: E402
 from stopliga.notifier import _safe_notification_url  # noqa: E402
-from stopliga.errors import AuthenticationError, DiscoveryError, NetworkError, PartialUpdateError, ReconciliationRequiredError, StateError, UnsupportedRouteShapeError  # noqa: E402
+from stopliga.errors import (  # noqa: E402
+    AuthenticationError,
+    DiscoveryError,
+    NetworkError,
+    PartialUpdateError,
+    ReconciliationRequiredError,
+    StateError,
+    UnsupportedRouteShapeError,
+)
 
 
 TEST_API_KEY = "test-api-key"
@@ -214,14 +222,10 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"data": [clone(self.state.route)] if self.state.route else []})
             return
 
-        if (
-            self.state.linked_list
-            and path
-            in {
-                f"/proxy/network/integration/v1/sites/{self.state.site_id}/traffic-matching-lists/{self.state.linked_list['_id']}",
-                f"/proxy/network/v1/sites/{self.state.site_id}/traffic-matching-lists/{self.state.linked_list['_id']}",
-            }
-        ):
+        if self.state.linked_list and path in {
+            f"/proxy/network/integration/v1/sites/{self.state.site_id}/traffic-matching-lists/{self.state.linked_list['_id']}",
+            f"/proxy/network/v1/sites/{self.state.site_id}/traffic-matching-lists/{self.state.linked_list['_id']}",
+        }:
             if not self._authorized():
                 self._send_json(401, {"error": "unauthorized"})
                 return
@@ -235,7 +239,11 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if self.state.route and path == f"/proxy/network/v2/api/site/{self.state.network_site_name}/trafficroutes/{self.state.route['_id']}":
+        if (
+            self.state.route
+            and path
+            == f"/proxy/network/v2/api/site/{self.state.network_site_name}/trafficroutes/{self.state.route['_id']}"
+        ):
             if not self._authorized():
                 self._send_json(401, {"error": "unauthorized"})
                 return
@@ -267,6 +275,8 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
 
 
 class TestServer:
+    __test__ = False
+
     def __init__(self, state: FakeState, *, https: bool) -> None:
         self.state = state
         self.https = https
@@ -371,7 +381,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 host="127.0.0.1",
@@ -439,7 +453,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "items": ["203.0.113.0/24"],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -465,7 +483,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 {"name": "salon", "mac": "aa:bb:cc:dd:ee:02"},
             ],
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -506,7 +528,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 {"hostname": "a-device", "mac": "aa:bb:cc:dd:ee:01"},
             ],
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -533,7 +559,11 @@ class ServiceIntegrationTests(unittest.TestCase):
             route=None,
             networks=[],
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -558,7 +588,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 {"_id": "vpn-network-1", "name": "Alpha VPN", "purpose": "vpn-client"},
             ],
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -568,7 +602,9 @@ class ServiceIntegrationTests(unittest.TestCase):
             with self.assertRaises(DiscoveryError):
                 StopLigaService(config).run_once()
             self.assertIsNone(state.route)
-            self.assertNotIn(f"POST /proxy/network/v2/api/site/{state.network_site_name}/trafficroutes", state.request_log)
+            self.assertNotIn(
+                f"POST /proxy/network/v2/api/site/{state.network_site_name}/trafficroutes", state.request_log
+            )
 
     def test_create_route_falls_back_to_first_device_when_all_clients_target_is_rejected(self) -> None:
         state = FakeState(
@@ -585,7 +621,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 {"hostname": "a-device", "mac": "aa:bb:cc:dd:ee:01"},
             ],
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -608,7 +648,11 @@ class ServiceIntegrationTests(unittest.TestCase):
             ],
             site_id="site-1",
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 site="site-1",
@@ -633,7 +677,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -671,7 +719,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text("{this-is-not-json", encoding="utf-8")
             config = self.make_config(
@@ -698,7 +750,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text("{this-is-not-json", encoding="utf-8")
             guard_path = Path(tmpdir) / "bootstrap_guard.json"
@@ -733,7 +789,11 @@ class ServiceIntegrationTests(unittest.TestCase):
             clients=[{"hostname": "apple-tv", "mac": "aa:bb:cc:dd:ee:01"}],
             fail_v2_route_list_after_create=True,
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -756,7 +816,11 @@ class ServiceIntegrationTests(unittest.TestCase):
             networks=[{"_id": "vpn-network-1", "name": "Alpha VPN", "purpose": "vpn-client"}],
             clients=[{"hostname": "a-device", "mac": "aa:bb:cc:dd:ee:01"}],
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 state_file=Path(tmpdir),
@@ -790,7 +854,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "items": ["203.0.113.0/24"],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -814,7 +882,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "computed_status": "internal-only",
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -841,7 +913,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 api_key="wrong-key",
@@ -872,7 +948,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "items": ["203.0.113.0/24"],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -916,7 +996,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "items": ["203.0.113.0/24"],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -944,7 +1028,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -980,7 +1068,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -1017,7 +1109,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text(json.dumps({"last_is_blocked": False}), encoding="utf-8")
             config = self.make_config(
@@ -1048,7 +1144,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text(json.dumps({"last_is_blocked": True}), encoding="utf-8")
             config = self.make_config(
@@ -1099,7 +1199,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text(json.dumps({"last_is_blocked": True}), encoding="utf-8")
             config = self.make_config(
@@ -1154,7 +1258,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 port=int(unifi.base_url.rsplit(":", 1)[1]),
@@ -1178,7 +1286,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text(json.dumps({"last_is_blocked": False}), encoding="utf-8")
             config = self.make_config(
@@ -1231,7 +1343,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
             },
         )
-        with tempfile.TemporaryDirectory() as tmpdir, TestServer(state, https=True) as unifi, TestServer(state, https=False) as feed:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
             config = self.make_config(
                 state_dir=tmpdir,
                 max_response_bytes=1024,

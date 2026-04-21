@@ -1,8 +1,16 @@
 services:
   stopliga:
-    image: ghcr.io/jcastro/stopliga:latest
+    image: ${STOPLIGA_IMAGE:-ghcr.io/jcastro/stopliga:0.1.12}
     container_name: stopliga
     restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
     env_file:
       - .env
     volumes:

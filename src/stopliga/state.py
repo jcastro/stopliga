@@ -16,6 +16,8 @@ from .errors import AlreadyRunningError, ConfigError, StateError
 from .models import StateSnapshot
 from .utils import ensure_parent_dir
 
+MAX_STATE_FILE_BYTES = 1024 * 1024
+
 
 def utcnow_iso() -> str:
     """Return the current UTC time as an ISO-8601 string."""
@@ -94,9 +96,15 @@ class StateStore:
 
     def load(self) -> dict[str, Any]:
         try:
-            raw = self.path.read_text(encoding="utf-8")
+            stat_result = self.path.stat()
         except FileNotFoundError:
             return {}
+        except OSError as exc:
+            raise StateError(f"Unable to read state file {self.path}: {exc}") from exc
+        if stat_result.st_size > MAX_STATE_FILE_BYTES:
+            raise ConfigError(f"State file exceeds safety limit of {MAX_STATE_FILE_BYTES} bytes: {self.path}")
+        try:
+            raw = self.path.read_text(encoding="utf-8")
         except OSError as exc:
             raise StateError(f"Unable to read state file {self.path}: {exc}") from exc
         try:
@@ -132,6 +140,7 @@ class StateStore:
                 json.dump(payload, handle, ensure_ascii=True, indent=2, sort_keys=True)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.chmod(temp_name, 0o600)
             os.replace(temp_name, self.path)
         except OSError as exc:
             raise StateError(f"Unable to write state file {self.path}: {exc}") from exc

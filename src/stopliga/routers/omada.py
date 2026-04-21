@@ -12,7 +12,16 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from ..errors import AuthenticationError, DiscoveryError, DuplicateRouteError, NetworkError, PartialUpdateError, RemoteRequestError, StopLigaError, UnsupportedRouteShapeError
+from ..errors import (
+    AuthenticationError,
+    DiscoveryError,
+    DuplicateRouteError,
+    NetworkError,
+    PartialUpdateError,
+    RemoteRequestError,
+    StopLigaError,
+    UnsupportedRouteShapeError,
+)
 from ..logging_utils import log_event
 from ..models import Config, FeedSnapshot, SyncResult
 from ..utils import make_ssl_context, read_limited, sleep_with_backoff, sort_ip_tokens
@@ -98,7 +107,7 @@ def _collapse_destinations(destinations: Sequence[str]) -> list[str]:
 
 
 def _chunked(values: Sequence[str], size: int) -> list[list[str]]:
-    return [list(values[index:index + size]) for index in range(0, len(values), size)]
+    return [list(values[index : index + size]) for index in range(0, len(values), size)]
 
 
 def _group_destinations(record: dict[str, Any]) -> list[str]:
@@ -186,7 +195,9 @@ def _normalize_policy_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _flatten_route_destinations(route_record: dict[str, Any] | None, groups_by_id: dict[str, dict[str, Any]]) -> list[str]:
+def _flatten_route_destinations(
+    route_record: dict[str, Any] | None, groups_by_id: dict[str, dict[str, Any]]
+) -> list[str]:
     if route_record is None:
         return []
     if int(route_record.get("destinationType", -1)) != OMADA_DESTINATION_TYPE_IP_GROUP:
@@ -275,7 +286,9 @@ class OmadaClient:
                     headers["Content-Type"] = "application/json"
                 request = urllib.request.Request(url, data=body, method=method, headers=headers)
                 try:
-                    with urllib.request.urlopen(request, context=self.context, timeout=self.config.request_timeout) as response:
+                    with urllib.request.urlopen(
+                        request, context=self.context, timeout=self.config.request_timeout
+                    ) as response:
                         raw = read_limited(
                             response,
                             max_bytes=self.config.max_response_bytes,
@@ -289,7 +302,14 @@ class OmadaClient:
                         if auth_retry_remaining > 0:
                             auth_retry_remaining -= 1
                             self.access_token = None
-                            log_event(self.logger, logging.INFO, "omada_access_token_retry", method=method, path=path, reason="http_401")
+                            log_event(
+                                self.logger,
+                                logging.INFO,
+                                "omada_access_token_retry",
+                                method=method,
+                                path=path,
+                                reason="http_401",
+                            )
                             continue
                         raise AuthenticationError("Omada request was rejected with HTTP 401") from exc
                     if payload is not None:
@@ -299,20 +319,47 @@ class OmadaClient:
                             if auth_retry_remaining > 0:
                                 auth_retry_remaining -= 1
                                 self.access_token = None
-                                log_event(self.logger, logging.INFO, "omada_access_token_retry", method=method, path=path, reason="api_auth_error")
+                                log_event(
+                                    self.logger,
+                                    logging.INFO,
+                                    "omada_access_token_retry",
+                                    method=method,
+                                    path=path,
+                                    reason="api_auth_error",
+                                )
                                 continue
                             raise
                     message = raw.decode("utf-8", errors="replace") if raw else str(exc)
-                    last_error = RemoteRequestError(f"Omada request failed for {method} {path}: HTTP {exc.code}: {message}")
+                    last_error = RemoteRequestError(
+                        f"Omada request failed for {method} {path}: HTTP {exc.code}: {message}"
+                    )
                     if attempt < attempts:
-                        log_event(self.logger, logging.WARNING, "omada_retry_http", method=method, path=path, attempt=attempt, retries=attempts, error=last_error)
+                        log_event(
+                            self.logger,
+                            logging.WARNING,
+                            "omada_retry_http",
+                            method=method,
+                            path=path,
+                            attempt=attempt,
+                            retries=attempts,
+                            error=last_error,
+                        )
                         sleep_with_backoff(attempt)
                         break
                     raise last_error from exc
                 except urllib.error.URLError as exc:
                     last_error = NetworkError(f"Network failure for {method} {path}: {exc}")
                     if attempt < attempts:
-                        log_event(self.logger, logging.WARNING, "omada_retry_network", method=method, path=path, attempt=attempt, retries=attempts, error=last_error)
+                        log_event(
+                            self.logger,
+                            logging.WARNING,
+                            "omada_retry_network",
+                            method=method,
+                            path=path,
+                            attempt=attempt,
+                            retries=attempts,
+                            error=last_error,
+                        )
                         sleep_with_backoff(attempt)
                         break
                     raise last_error from exc
@@ -330,7 +377,14 @@ class OmadaClient:
                     if auth_retry_remaining > 0:
                         auth_retry_remaining -= 1
                         self.access_token = None
-                        log_event(self.logger, logging.INFO, "omada_access_token_retry", method=method, path=path, reason="api_auth_error")
+                        log_event(
+                            self.logger,
+                            logging.INFO,
+                            "omada_access_token_retry",
+                            method=method,
+                            path=path,
+                            reason="api_auth_error",
+                        )
                         continue
                     raise
                 return payload
@@ -478,11 +532,15 @@ class OmadaClient:
         return self._records(payload)
 
     def list_site_to_site_vpns(self, site_id: str) -> list[dict[str, Any]]:
-        payload = self.request("GET", f"/openapi/v1/{self.config.omada_omadac_id}/sites/{site_id}/vpn/site-to-site-vpns")
+        payload = self.request(
+            "GET", f"/openapi/v1/{self.config.omada_omadac_id}/sites/{site_id}/vpn/site-to-site-vpns"
+        )
         return self._records(payload)
 
     def list_client_to_site_vpns(self, site_id: str) -> list[dict[str, Any]]:
-        payload = self.request("GET", f"/openapi/v1/{self.config.omada_omadac_id}/sites/{site_id}/vpn/client-to-site-vpn-clients")
+        payload = self.request(
+            "GET", f"/openapi/v1/{self.config.omada_omadac_id}/sites/{site_id}/vpn/client-to-site-vpn-clients"
+        )
         return self._records(payload)
 
     def list_wireguard_vpns(self, site_id: str) -> list[dict[str, Any]]:
@@ -665,7 +723,9 @@ class OmadaRouterDriver(RouterDriver):
         return payload
 
     def _route_needs_update(self, route_record: dict[str, Any], desired_payload: dict[str, Any]) -> bool:
-        return _normalize_policy_payload(_policy_payload_from_route(route_record)) != _normalize_policy_payload(desired_payload)
+        return _normalize_policy_payload(_policy_payload_from_route(route_record)) != _normalize_policy_payload(
+            desired_payload
+        )
 
     def _rollback_group(self, client: OmadaClient, site_id: str, mutation: GroupMutation) -> None:
         if mutation.action == "delete":
@@ -731,9 +791,7 @@ class OmadaRouterDriver(RouterDriver):
 
         all_groups = client.list_groups(site.site_id)
         groups_by_id = {
-            group_id: group
-            for group in all_groups
-            if (group_id := _normalize_text(group.get("groupId"))) is not None
+            group_id: group for group in all_groups if (group_id := _normalize_text(group.get("groupId"))) is not None
         }
         managed_groups = self._build_managed_groups_by_name(all_groups)
         routes = client.list_policy_routes(site.site_id)
@@ -826,7 +884,9 @@ class OmadaRouterDriver(RouterDriver):
                         continue
                     current_stage = "group-update"
                     client.update_group(site.site_id, group_id, payload)
-                    group_mutations.append(GroupMutation("restore", group_id, self._group_restore_payload(existing_group)))
+                    group_mutations.append(
+                        GroupMutation("restore", group_id, self._group_restore_payload(existing_group))
+                    )
                     completed_stages.append(f"group-update:{name}")
                     continue
 
@@ -874,7 +934,9 @@ class OmadaRouterDriver(RouterDriver):
             if refreshed_route is None:
                 raise RemoteRequestError(f"Omada route {self.config.route_name!r} disappeared after update")
             if self._route_needs_update(refreshed_route, desired_route_payload):
-                raise RemoteRequestError(f"Omada route {self.config.route_name!r} was not updated to the expected state")
+                raise RemoteRequestError(
+                    f"Omada route {self.config.route_name!r} was not updated to the expected state"
+                )
             verified_destinations = _flatten_route_destinations(refreshed_route, refreshed_groups_by_id)
             if verified_destinations != desired_destinations:
                 raise RemoteRequestError("Omada managed IP Groups were not updated to the expected destination set")
@@ -921,7 +983,9 @@ class OmadaRouterDriver(RouterDriver):
             rollback_completed = False
             rollback_error: str | None = None
             try:
-                rollback_attempted = bool(group_mutations or created_route or (route_changed and route_id and original_route_payload))
+                rollback_attempted = bool(
+                    group_mutations or created_route or (route_changed and route_id and original_route_payload)
+                )
                 if created_route and route_id:
                     client.delete_policy_route(site.site_id, route_id)
                 elif route_changed and route_id and original_route_payload is not None:

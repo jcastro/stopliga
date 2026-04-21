@@ -340,7 +340,10 @@ class OmadaIntegrationTests(unittest.TestCase):
         self.assertEqual(result.backend_name, "omada-policy-routing")
         self.assertEqual(len(state.groups), 1)
         self.assertEqual(state.groups[0]["name"], "StopLiga [001]")
-        self.assertEqual(state.groups[0]["ipList"], [{"ip": "1.1.1.0", "mask": 24}, {"ip": "2.2.2.0", "mask": 24}, {"ip": "3.3.3.0", "mask": 24}])
+        self.assertEqual(
+            state.groups[0]["ipList"],
+            [{"ip": "1.1.1.0", "mask": 24}, {"ip": "2.2.2.0", "mask": 24}, {"ip": "3.3.3.0", "mask": 24}],
+        )
         self.assertEqual(len(state.policy_routes), 1)
         route = state.policy_routes[0]
         self.assertTrue(route["status"])
@@ -458,7 +461,9 @@ class OmadaIntegrationTests(unittest.TestCase):
             StopLigaService(config).run_once()
 
         self.assertIn("GET /openapi/v1/omadac-id/sites/site-1/vpn/site-to-site-vpns", state.request_log)
-        self.assertNotIn("GET /openapi/v1/omadac-id/sites/site-1/vpn/wireguards?page=1&pageSize=1000", state.request_log)
+        self.assertNotIn(
+            "GET /openapi/v1/omadac-id/sites/site-1/vpn/wireguards?page=1&pageSize=1000", state.request_log
+        )
 
     def test_omada_prefers_v3_lan_network_endpoint(self) -> None:
         state = FakeOmadaState(

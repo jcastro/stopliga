@@ -135,22 +135,16 @@ class OPNsenseClient:
                             content_length=response.headers.get("Content-Length"),
                         )
                     except ValueError as exc:
-                        raise RemoteRequestError(
-                            f"{method_name} {path} returned an oversized response: {exc}"
-                        ) from exc
+                        raise RemoteRequestError(f"{method_name} {path} returned an oversized response: {exc}") from exc
                     text = raw.decode("utf-8", errors="replace")
                     if response.status not in expected_statuses:
-                        raise RemoteRequestError(
-                            f"{method_name} {path} returned {response.status}: {text[:500]}"
-                        )
+                        raise RemoteRequestError(f"{method_name} {path} returned {response.status}: {text[:500]}")
                     if not text:
                         return None
                     try:
                         return json.loads(text)
                     except json.JSONDecodeError as exc:
-                        raise RemoteRequestError(
-                            f"{method_name} {path} returned invalid JSON: {text[:500]}"
-                        ) from exc
+                        raise RemoteRequestError(f"{method_name} {path} returned invalid JSON: {text[:500]}") from exc
             except urllib.error.HTTPError as exc:
                 try:
                     try:
@@ -180,9 +174,7 @@ class OPNsenseClient:
                         )
                         sleep_with_backoff(attempt)
                         continue
-                    raise RemoteRequestError(
-                        f"{method_name} {path} returned {exc.code}: {err_text[:700]}"
-                    ) from exc
+                    raise RemoteRequestError(f"{method_name} {path} returned {exc.code}: {err_text[:700]}") from exc
                 finally:
                     exc.close()
             except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
@@ -264,10 +256,7 @@ class OPNsenseClient:
         payload = self.request("GET", f"/firewall/filter/searchRule?searchPhrase={search_phrase}")
         rows = payload.get("rows", []) if isinstance(payload, dict) else []
         for row in rows:
-            if (
-                isinstance(row, dict)
-                and row.get("description", "").strip().lower() == description.strip().lower()
-            ):
+            if isinstance(row, dict) and row.get("description", "").strip().lower() == description.strip().lower():
                 return row
         return None
 

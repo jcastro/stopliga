@@ -16,6 +16,8 @@ from .logging_utils import log_event
 from .models import Config, SyncResult
 from .utils import make_ssl_context, sleep_with_backoff
 
+DEFAULT_USER_AGENT = "stopliga/0.1.12"
+
 
 def _safe_notification_url(url: str) -> str:
     parsed = urlparse(url)
@@ -48,14 +50,20 @@ def _post_json(
     ca_file,
 ) -> None:
     body = json.dumps(payload).encode("utf-8")
-    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=make_ssl_context(verify=verify_tls, ca_file=ca_file)))
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=make_ssl_context(verify=verify_tls, ca_file=ca_file))
+    )
     safe_url = _safe_notification_url(url)
     logger = logging.getLogger("stopliga.notify")
     for attempt in range(1, max(1, retries) + 1):
         request = urllib.request.Request(
             url,
             data=body,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": DEFAULT_USER_AGENT,
+            },
             method="POST",
         )
         try:
@@ -63,13 +71,29 @@ def _post_json(
                 return
         except urllib.error.HTTPError as exc:
             if exc.code in {408, 429, 500, 502, 503, 504} and attempt < retries:
-                log_event(logger, logging.WARNING, "notification_retry", url=safe_url, attempt=attempt, retries=retries, status=exc.code)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "notification_retry",
+                    url=safe_url,
+                    attempt=attempt,
+                    retries=retries,
+                    status=exc.code,
+                )
                 sleep_with_backoff(attempt)
                 continue
             raise NetworkError(f"Notification request failed for {safe_url}: HTTP {exc.code}") from exc
         except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
             if attempt < retries:
-                log_event(logger, logging.WARNING, "notification_retry", url=safe_url, attempt=attempt, retries=retries, error=exc)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "notification_retry",
+                    url=safe_url,
+                    attempt=attempt,
+                    retries=retries,
+                    error=exc,
+                )
                 sleep_with_backoff(attempt)
                 continue
             raise NetworkError(f"Notification request failed for {safe_url}: {exc}") from exc
@@ -88,7 +112,9 @@ def _telegram_request_config(config: Config) -> ProviderRequestConfig:
     return ProviderRequestConfig(
         timeout=config.notification_timeout,
         retries=config.notification_retries,
-        verify_tls=config.telegram_verify_tls if config.telegram_verify_tls is not None else config.notification_verify_tls,
+        verify_tls=config.telegram_verify_tls
+        if config.telegram_verify_tls is not None
+        else config.notification_verify_tls,
         ca_file=config.telegram_ca_file or config.notification_ca_file,
     )
 
@@ -102,9 +128,7 @@ def build_notification_message(result: SyncResult, previous_state: dict[str, obj
 
     previous_blocked = previous_state.get("last_is_blocked")
     if isinstance(previous_blocked, bool) and previous_blocked != result.is_blocked:
-        changes.append(
-            f"- 🚦 Block status: {_blocked_label(previous_blocked)} -> {_blocked_label(result.is_blocked)}"
-        )
+        changes.append(f"- 🚦 Block status: {_blocked_label(previous_blocked)} -> {_blocked_label(result.is_blocked)}")
 
     if result.added_destinations or result.removed_destinations:
         parts: list[str] = []

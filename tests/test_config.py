@@ -52,6 +52,32 @@ site = "default"
         config = load_config(args, {}, validate=False)
         self.assertEqual(config.run_mode, "once")
 
+    def test_invalid_log_level_from_environment_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_LOG_LEVEL": "trace",
+                },
+            )
+
+    def test_boolean_value_is_not_accepted_for_integer_settings(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_RETRIES": "true",
+                },
+            )
+
     def test_api_key_is_loaded_for_local_mode(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
@@ -165,6 +191,36 @@ api_key = "file-api-key"
             self.assertEqual(config.site, "lab")
             self.assertFalse(config.unifi_verify_tls)
             self.assertEqual(config.api_key, "file-api-key")
+
+    def test_secret_file_env_is_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            secret_file = Path(tmpdir) / "unifi_api_key.txt"
+            secret_file.write_text("file-secret\n", encoding="utf-8")
+            parser = build_parser()
+            args = parser.parse_args([])
+            config = load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY_FILE": str(secret_file),
+                },
+            )
+            self.assertEqual(config.api_key, "file-secret")
+
+    def test_secret_file_must_be_regular_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parser = build_parser()
+            args = parser.parse_args([])
+            with self.assertRaises(ConfigError):
+                load_config(
+                    args,
+                    {
+                        "UNIFI_HOST": "10.0.0.2",
+                        "UNIFI_API_KEY": "test-api-key",
+                        "STOPLIGA_GOTIFY_URL": "https://gotify.example",
+                        "STOPLIGA_GOTIFY_TOKEN_FILE": tmpdir,
+                    },
+                )
 
     def test_invalid_router_type_is_rejected(self) -> None:
         parser = build_parser()
@@ -523,3 +579,19 @@ api_key = "file-api-key"
                     "STOPLIGA_MAX_RESPONSE_BYTES": "512",
                 },
             )
+
+    def test_state_related_files_must_use_distinct_paths(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shared_path = str(Path(tmpdir) / "shared.json")
+            with self.assertRaises(ConfigError):
+                load_config(
+                    args,
+                    {
+                        "UNIFI_HOST": "10.0.0.2",
+                        "UNIFI_API_KEY": "test-api-key",
+                        "STOPLIGA_STATE_FILE": shared_path,
+                        "STOPLIGA_LOCK_FILE": shared_path,
+                    },
+                )

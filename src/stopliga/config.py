@@ -15,6 +15,7 @@ from .models import Config, InvalidEntryPolicy, LegacyFirewallBackend, OmadaTarg
 
 
 DEFAULTS = Config()
+VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 
 
 def _parse_bool(value: Any, *, field_name: str) -> bool:
@@ -32,6 +33,8 @@ def _parse_bool(value: Any, *, field_name: str) -> bool:
 
 
 def _parse_int(value: Any, *, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ConfigError(f"Invalid integer value for {field_name}: {value!r}")
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
@@ -39,6 +42,8 @@ def _parse_int(value: Any, *, field_name: str) -> int:
 
 
 def _parse_float(value: Any, *, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ConfigError(f"Invalid float value for {field_name}: {value!r}")
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
@@ -53,6 +58,15 @@ def _parse_path(value: Any, *, field_name: str) -> Path:
     raise ConfigError(f"Invalid path value for {field_name}: {value!r}")
 
 
+def _validate_log_level(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"log_level must be one of {', '.join(sorted(VALID_LOG_LEVELS))}")
+    normalized = value.strip().upper()
+    if normalized not in VALID_LOG_LEVELS:
+        raise ConfigError(f"log_level must be one of {', '.join(sorted(VALID_LOG_LEVELS))}, not {value!r}")
+    return normalized
+
+
 def _validate_host(host: str, *, field_name: str) -> None:
     candidate = host.strip()
     if not candidate:
@@ -60,17 +74,13 @@ def _validate_host(host: str, *, field_name: str) -> None:
     if candidate != host:
         raise ConfigError(f"{field_name} must not contain leading or trailing whitespace")
     if "://" in candidate or "/" in candidate or "@" in candidate or "?" in candidate or "#" in candidate:
-        raise ConfigError(
-            f"{field_name} must be a hostname or IP address without scheme, path or credentials"
-        )
+        raise ConfigError(f"{field_name} must be a hostname or IP address without scheme, path or credentials")
     if candidate.startswith("[") and candidate.endswith("]"):
         inner = candidate[1:-1]
         try:
             ipaddress.IPv6Address(inner)
         except ipaddress.AddressValueError as exc:
-            raise ConfigError(
-                f"{field_name} contains an invalid bracketed IPv6 address: {candidate!r}"
-            ) from exc
+            raise ConfigError(f"{field_name} contains an invalid bracketed IPv6 address: {candidate!r}") from exc
         return
     try:
         ipaddress.ip_address(candidate)
@@ -78,7 +88,13 @@ def _validate_host(host: str, *, field_name: str) -> None:
         allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
         if any(ch not in allowed for ch in candidate):
             raise ConfigError(f"{field_name} contains unsupported characters: {candidate!r}")
-        if ".." in candidate or candidate.startswith(".") or candidate.endswith(".") or candidate.startswith("-") or candidate.endswith("-"):
+        if (
+            ".." in candidate
+            or candidate.startswith(".")
+            or candidate.endswith(".")
+            or candidate.startswith("-")
+            or candidate.endswith("-")
+        ):
             raise ConfigError(f"{field_name} is not a valid hostname: {candidate!r}")
     else:
         return
@@ -129,7 +145,11 @@ def _validate_feed_url(
         raise ConfigError(f"{field_name} must not embed credentials")
     if parsed.scheme == "http" and parsed.hostname not in {"127.0.0.1", "localhost"}:
         raise ConfigError(f"{field_name} only allows plain HTTP for localhost/127.0.0.1")
-    if _is_private_hostname(parsed.hostname) and not allow_private_hosts and parsed.hostname not in {"127.0.0.1", "localhost"}:
+    if (
+        _is_private_hostname(parsed.hostname)
+        and not allow_private_hosts
+        and parsed.hostname not in {"127.0.0.1", "localhost"}
+    ):
         raise ConfigError(f"{field_name} points to a private or local host; set feed_allow_private_hosts to override")
 
 
@@ -316,7 +336,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--omada-target-type", choices=["wan", "vpn"], default=None, help="Omada egress target kind")
     parser.add_argument("--omada-target", default=None, help="Omada WAN or VPN name/ID to route through")
     parser.add_argument("--omada-source-networks", default=None, help="Comma-separated Omada LAN network names or IDs")
-    parser.add_argument("--omada-group-size", type=int, default=None, help="Maximum IPv4 subnets per managed Omada IP Group")
+    parser.add_argument(
+        "--omada-group-size", type=int, default=None, help="Maximum IPv4 subnets per managed Omada IP Group"
+    )
     parser.add_argument("--status-url", default=None, help="Status feed URL (http/https or dns://hostname)")
     parser.add_argument("--ip-list-url", default=None, help="IP list TXT URL")
     parser.add_argument("--state-file", default=None, help="State file path")
@@ -324,7 +346,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ca-file", dest="unifi_ca_file", default=None, help="CA bundle for UniFi TLS")
     parser.add_argument("--omada-ca-file", default=None, help="CA bundle for Omada TLS")
     parser.add_argument("--vpn-name", default=None, help="Exact VPN client network name for automatic route creation")
-    parser.add_argument("--targets", default=None, help="Comma-separated client names or MACs for automatic route creation")
+    parser.add_argument(
+        "--targets", default=None, help="Comma-separated client names or MACs for automatic route creation"
+    )
     parser.add_argument(
         "--invalid-entry-policy",
         choices=["fail", "ignore"],
@@ -366,7 +390,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     omada_tls_group = parser.add_mutually_exclusive_group()
     omada_tls_group.add_argument("--omada-verify-tls", dest="omada_verify_tls", action="store_true", default=None)
-    omada_tls_group.add_argument("--omada-insecure-skip-verify", dest="omada_verify_tls", action="store_false", default=None)
+    omada_tls_group.add_argument(
+        "--omada-insecure-skip-verify", dest="omada_verify_tls", action="store_false", default=None
+    )
     return parser
 
 
@@ -385,8 +411,11 @@ def _secret_file_value(environ: Mapping[str, str], key_file: str, *, field_name:
     path_value = _env_value(environ, key_file)
     if path_value is None:
         return None
+    path = Path(path_value).expanduser()
+    if path.exists() and not path.is_file():
+        raise ConfigError(f"Secret file for {field_name} must be a regular file: {path}")
     try:
-        secret = Path(path_value).expanduser().read_text(encoding="utf-8").strip()
+        secret = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise ConfigError(f"Unable to read secret file for {field_name}: {path_value}") from exc
     if not secret:
@@ -563,11 +592,15 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         file_cfg.get("omada_ca_file"),
     )
 
-    log_level = "DEBUG" if args.verbose else _first(
-        args.log_level,
-        _env_value(env, "STOPLIGA_LOG_LEVEL"),
-        file_cfg.get("log_level"),
-        DEFAULTS.log_level,
+    log_level = (
+        "DEBUG"
+        if args.verbose
+        else _first(
+            args.log_level,
+            _env_value(env, "STOPLIGA_LOG_LEVEL"),
+            file_cfg.get("log_level"),
+            DEFAULTS.log_level,
+        )
     )
 
     config = Config(
@@ -583,15 +616,32 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         ),
         host=cast(str | None, unifi_host),
         port=_parse_int(unifi_port, field_name="port"),
-        api_key=_first(args.api_key, _env_value(env, "UNIFI_API_KEY"), file_cfg.get("api_key"), DEFAULTS.api_key),
+        api_key=_first(
+            args.api_key,
+            _env_secret_first(
+                env,
+                field_name="api_key",
+                key="UNIFI_API_KEY",
+                key_file="UNIFI_API_KEY_FILE",
+            ),
+            file_cfg.get("api_key"),
+            DEFAULTS.api_key,
+        ),
         site=str(omada_site if router_type == "omada" else unifi_site),
-        route_name=str(_first(args.route_name, _env_value(env, "STOPLIGA_ROUTE_NAME"), file_cfg.get("route_name"), DEFAULTS.route_name)),
+        route_name=str(
+            _first(
+                args.route_name, _env_value(env, "STOPLIGA_ROUTE_NAME"), file_cfg.get("route_name"), DEFAULTS.route_name
+            )
+        ),
         destination_field=_normalize_destination_field(
-            _first(args.destination_field, _env_value(env, "STOPLIGA_DESTINATION_FIELD"), file_cfg.get("destination_field"), DEFAULTS.destination_field)
+            _first(
+                args.destination_field,
+                _env_value(env, "STOPLIGA_DESTINATION_FIELD"),
+                file_cfg.get("destination_field"),
+                DEFAULTS.destination_field,
+            )
         ),
-        omada_base_url=_normalize_omada_base_url(
-            _first(omada_base_url_raw, DEFAULTS.omada_base_url)
-        ),
+        omada_base_url=_normalize_omada_base_url(_first(omada_base_url_raw, DEFAULTS.omada_base_url)),
         omada_client_id=_first(
             args.omada_client_id,
             _env_value(env, "OMADA_CLIENT_ID"),
@@ -655,9 +705,7 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             omada_verify_tls,
             field_name="omada_verify_tls",
         ),
-        omada_ca_file=_parse_path(value, field_name="omada_ca_file")
-        if (value := omada_ca_file)
-        else None,
+        omada_ca_file=_parse_path(value, field_name="omada_ca_file") if (value := omada_ca_file) else None,
         omada_group_size=_parse_int(
             _first(
                 args.omada_group_size,
@@ -668,8 +716,19 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             ),
             field_name="omada_group_size",
         ),
-        status_url=str(_first(args.status_url, _env_value(env, "STOPLIGA_STATUS_URL"), file_cfg.get("status_url"), DEFAULTS.status_url)),
-        ip_list_url=str(_first(args.ip_list_url, _env_value(env, "STOPLIGA_IP_LIST_URL"), file_cfg.get("ip_list_url"), DEFAULTS.ip_list_url)),
+        status_url=str(
+            _first(
+                args.status_url, _env_value(env, "STOPLIGA_STATUS_URL"), file_cfg.get("status_url"), DEFAULTS.status_url
+            )
+        ),
+        ip_list_url=str(
+            _first(
+                args.ip_list_url,
+                _env_value(env, "STOPLIGA_IP_LIST_URL"),
+                file_cfg.get("ip_list_url"),
+                DEFAULTS.ip_list_url,
+            )
+        ),
         unifi_verify_tls=_parse_bool(
             unifi_verify_tls,
             field_name="unifi_verify_tls",
@@ -713,20 +772,37 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             DEFAULTS.opnsense_alias_name,
         ),
         feed_verify_tls=_parse_bool(
-            _first(_env_value(env, "STOPLIGA_FEED_VERIFY_TLS"), file_cfg.get("feed_verify_tls"), DEFAULTS.feed_verify_tls),
+            _first(
+                _env_value(env, "STOPLIGA_FEED_VERIFY_TLS"), file_cfg.get("feed_verify_tls"), DEFAULTS.feed_verify_tls
+            ),
             field_name="feed_verify_tls",
         ),
-        feed_ca_file=_parse_path(value, field_name="feed_ca_file") if (value := _first(_env_value(env, "STOPLIGA_FEED_CA_FILE"), file_cfg.get("feed_ca_file"))) else None,
+        feed_ca_file=_parse_path(value, field_name="feed_ca_file")
+        if (value := _first(_env_value(env, "STOPLIGA_FEED_CA_FILE"), file_cfg.get("feed_ca_file")))
+        else None,
         feed_allow_private_hosts=_parse_bool(
-            _first(_env_value(env, "STOPLIGA_FEED_ALLOW_PRIVATE_HOSTS"), file_cfg.get("feed_allow_private_hosts"), DEFAULTS.feed_allow_private_hosts),
+            _first(
+                _env_value(env, "STOPLIGA_FEED_ALLOW_PRIVATE_HOSTS"),
+                file_cfg.get("feed_allow_private_hosts"),
+                DEFAULTS.feed_allow_private_hosts,
+            ),
             field_name="feed_allow_private_hosts",
         ),
         strict_feed_consistency=_parse_bool(
-            _first(_env_value(env, "STOPLIGA_STRICT_FEED_CONSISTENCY"), file_cfg.get("strict_feed_consistency"), DEFAULTS.strict_feed_consistency),
+            _first(
+                _env_value(env, "STOPLIGA_STRICT_FEED_CONSISTENCY"),
+                file_cfg.get("strict_feed_consistency"),
+                DEFAULTS.strict_feed_consistency,
+            ),
             field_name="strict_feed_consistency",
         ),
         request_timeout=_parse_float(
-            _first(args.request_timeout, _env_value(env, "STOPLIGA_REQUEST_TIMEOUT"), file_cfg.get("request_timeout"), DEFAULTS.request_timeout),
+            _first(
+                args.request_timeout,
+                _env_value(env, "STOPLIGA_REQUEST_TIMEOUT"),
+                file_cfg.get("request_timeout"),
+                DEFAULTS.request_timeout,
+            ),
             field_name="request_timeout",
         ),
         retries=_parse_int(
@@ -734,11 +810,21 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             field_name="retries",
         ),
         max_response_bytes=_parse_int(
-            _first(args.max_response_bytes, _env_value(env, "STOPLIGA_MAX_RESPONSE_BYTES"), file_cfg.get("max_response_bytes"), DEFAULTS.max_response_bytes),
+            _first(
+                args.max_response_bytes,
+                _env_value(env, "STOPLIGA_MAX_RESPONSE_BYTES"),
+                file_cfg.get("max_response_bytes"),
+                DEFAULTS.max_response_bytes,
+            ),
             field_name="max_response_bytes",
         ),
         interval_seconds=_parse_int(
-            _first(args.interval_seconds, _env_value(env, "STOPLIGA_SYNC_INTERVAL_SECONDS"), file_cfg.get("interval_seconds"), DEFAULTS.interval_seconds),
+            _first(
+                args.interval_seconds,
+                _env_value(env, "STOPLIGA_SYNC_INTERVAL_SECONDS"),
+                file_cfg.get("interval_seconds"),
+                DEFAULTS.interval_seconds,
+            ),
             field_name="interval_seconds",
         ),
         dry_run=_parse_bool(
@@ -757,88 +843,201 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             ),
         ),
         max_destinations=_parse_int(
-            _first(args.max_destinations, _env_value(env, "STOPLIGA_MAX_DESTINATIONS"), file_cfg.get("max_destinations"), DEFAULTS.max_destinations),
+            _first(
+                args.max_destinations,
+                _env_value(env, "STOPLIGA_MAX_DESTINATIONS"),
+                file_cfg.get("max_destinations"),
+                DEFAULTS.max_destinations,
+            ),
             field_name="max_destinations",
         ),
         state_file=_parse_path(
-            _first(args.state_file, _env_value(env, "STOPLIGA_STATE_FILE"), file_cfg.get("state_file"), str(DEFAULTS.state_file)),
+            _first(
+                args.state_file,
+                _env_value(env, "STOPLIGA_STATE_FILE"),
+                file_cfg.get("state_file"),
+                str(DEFAULTS.state_file),
+            ),
             field_name="state_file",
         ),
         lock_file=_parse_path(
-            _first(args.lock_file, _env_value(env, "STOPLIGA_LOCK_FILE"), file_cfg.get("lock_file"), str(DEFAULTS.lock_file)),
+            _first(
+                args.lock_file,
+                _env_value(env, "STOPLIGA_LOCK_FILE"),
+                file_cfg.get("lock_file"),
+                str(DEFAULTS.lock_file),
+            ),
             field_name="lock_file",
         ),
         bootstrap_guard_file=_parse_path(
-            _first(_env_value(env, "STOPLIGA_BOOTSTRAP_GUARD_FILE"), file_cfg.get("bootstrap_guard_file"), str(DEFAULTS.bootstrap_guard_file)),
+            _first(
+                _env_value(env, "STOPLIGA_BOOTSTRAP_GUARD_FILE"),
+                file_cfg.get("bootstrap_guard_file"),
+                str(DEFAULTS.bootstrap_guard_file),
+            ),
             field_name="bootstrap_guard_file",
         ),
-        health_max_age_seconds=_parse_int(value, field_name="health_max_age_seconds") if (value := _first(args.health_max_age_seconds, _env_value(env, "STOPLIGA_HEALTH_MAX_AGE_SECONDS"), file_cfg.get("health_max_age_seconds"))) is not None else None,
-        log_level=str(log_level).upper(),
-        vpn_name=_first(args.vpn_name, _env_value(env, "STOPLIGA_VPN_NAME"), file_cfg.get("vpn_name"), DEFAULTS.vpn_name),
+        health_max_age_seconds=_parse_int(value, field_name="health_max_age_seconds")
+        if (
+            value := _first(
+                args.health_max_age_seconds,
+                _env_value(env, "STOPLIGA_HEALTH_MAX_AGE_SECONDS"),
+                file_cfg.get("health_max_age_seconds"),
+            )
+        )
+        is not None
+        else None,
+        log_level=_validate_log_level(str(log_level)),
+        vpn_name=_first(
+            args.vpn_name, _env_value(env, "STOPLIGA_VPN_NAME"), file_cfg.get("vpn_name"), DEFAULTS.vpn_name
+        ),
         target_clients=_parse_csv_list(
-            _first(args.targets, _env_value(env, "STOPLIGA_TARGETS"), file_cfg.get("target_clients"), DEFAULTS.target_clients),
+            _first(
+                args.targets,
+                _env_value(env, "STOPLIGA_TARGETS"),
+                file_cfg.get("target_clients"),
+                DEFAULTS.target_clients,
+            ),
             field_name="target_clients",
         ),
         dump_payloads_on_error=_parse_bool(
-            _first(args.dump_payloads_on_error, _env_value(env, "STOPLIGA_DUMP_PAYLOADS_ON_ERROR"), file_cfg.get("dump_payloads_on_error"), DEFAULTS.dump_payloads_on_error),
+            _first(
+                args.dump_payloads_on_error,
+                _env_value(env, "STOPLIGA_DUMP_PAYLOADS_ON_ERROR"),
+                file_cfg.get("dump_payloads_on_error"),
+                DEFAULTS.dump_payloads_on_error,
+            ),
             field_name="dump_payloads_on_error",
         ),
-        gotify_url=_first(args.gotify_url, _env_value(env, "STOPLIGA_GOTIFY_URL"), file_cfg.get("gotify_url"), DEFAULTS.gotify_url),
+        gotify_url=_first(
+            args.gotify_url, _env_value(env, "STOPLIGA_GOTIFY_URL"), file_cfg.get("gotify_url"), DEFAULTS.gotify_url
+        ),
         gotify_token=_first(
             args.gotify_token,
-            _env_secret_first(env, field_name="gotify_token", key="STOPLIGA_GOTIFY_TOKEN", key_file="STOPLIGA_GOTIFY_TOKEN_FILE"),
+            _env_secret_first(
+                env, field_name="gotify_token", key="STOPLIGA_GOTIFY_TOKEN", key_file="STOPLIGA_GOTIFY_TOKEN_FILE"
+            ),
             file_cfg.get("gotify_token"),
             DEFAULTS.gotify_token,
         ),
         gotify_priority=_parse_int(
-            _first(args.gotify_priority, _env_value(env, "STOPLIGA_GOTIFY_PRIORITY"), file_cfg.get("gotify_priority"), DEFAULTS.gotify_priority),
+            _first(
+                args.gotify_priority,
+                _env_value(env, "STOPLIGA_GOTIFY_PRIORITY"),
+                file_cfg.get("gotify_priority"),
+                DEFAULTS.gotify_priority,
+            ),
             field_name="gotify_priority",
         ),
         telegram_bot_token=_first(
             args.telegram_bot_token,
-            _env_secret_first(env, field_name="telegram_bot_token", key="STOPLIGA_TELEGRAM_BOT_TOKEN", key_file="STOPLIGA_TELEGRAM_BOT_TOKEN_FILE"),
+            _env_secret_first(
+                env,
+                field_name="telegram_bot_token",
+                key="STOPLIGA_TELEGRAM_BOT_TOKEN",
+                key_file="STOPLIGA_TELEGRAM_BOT_TOKEN_FILE",
+            ),
             file_cfg.get("telegram_bot_token"),
             DEFAULTS.telegram_bot_token,
         ),
         telegram_chat_id=str(
-            _first(args.telegram_chat_id, _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"), file_cfg.get("telegram_chat_id"), DEFAULTS.telegram_chat_id)
-        ) if _first(args.telegram_chat_id, _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"), file_cfg.get("telegram_chat_id"), DEFAULTS.telegram_chat_id) is not None else None,
+            _first(
+                args.telegram_chat_id,
+                _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"),
+                file_cfg.get("telegram_chat_id"),
+                DEFAULTS.telegram_chat_id,
+            )
+        )
+        if _first(
+            args.telegram_chat_id,
+            _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"),
+            file_cfg.get("telegram_chat_id"),
+            DEFAULTS.telegram_chat_id,
+        )
+        is not None
+        else None,
         telegram_group_id=str(
-            _first(args.telegram_group_id, _env_value(env, "STOPLIGA_TELEGRAM_GROUP_ID"), file_cfg.get("telegram_group_id"), DEFAULTS.telegram_group_id)
-        ) if _first(args.telegram_group_id, _env_value(env, "STOPLIGA_TELEGRAM_GROUP_ID"), file_cfg.get("telegram_group_id"), DEFAULTS.telegram_group_id) is not None else None,
+            _first(
+                args.telegram_group_id,
+                _env_value(env, "STOPLIGA_TELEGRAM_GROUP_ID"),
+                file_cfg.get("telegram_group_id"),
+                DEFAULTS.telegram_group_id,
+            )
+        )
+        if _first(
+            args.telegram_group_id,
+            _env_value(env, "STOPLIGA_TELEGRAM_GROUP_ID"),
+            file_cfg.get("telegram_group_id"),
+            DEFAULTS.telegram_group_id,
+        )
+        is not None
+        else None,
         telegram_topic_id=_parse_int(
-            _first(args.telegram_topic_id, _env_value(env, "STOPLIGA_TELEGRAM_TOPIC_ID"), file_cfg.get("telegram_topic_id")),
+            _first(
+                args.telegram_topic_id, _env_value(env, "STOPLIGA_TELEGRAM_TOPIC_ID"), file_cfg.get("telegram_topic_id")
+            ),
             field_name="telegram_topic_id",
-        ) if _first(args.telegram_topic_id, _env_value(env, "STOPLIGA_TELEGRAM_TOPIC_ID"), file_cfg.get("telegram_topic_id")) is not None else None,
+        )
+        if _first(
+            args.telegram_topic_id, _env_value(env, "STOPLIGA_TELEGRAM_TOPIC_ID"), file_cfg.get("telegram_topic_id")
+        )
+        is not None
+        else None,
         notification_timeout=_parse_float(
-            _first(args.notification_timeout, _env_value(env, "STOPLIGA_NOTIFICATION_TIMEOUT"), file_cfg.get("notification_timeout"), DEFAULTS.notification_timeout),
+            _first(
+                args.notification_timeout,
+                _env_value(env, "STOPLIGA_NOTIFICATION_TIMEOUT"),
+                file_cfg.get("notification_timeout"),
+                DEFAULTS.notification_timeout,
+            ),
             field_name="notification_timeout",
         ),
         notification_retries=_parse_int(
-            _first(args.notification_retries, _env_value(env, "STOPLIGA_NOTIFICATION_RETRIES"), file_cfg.get("notification_retries"), DEFAULTS.notification_retries),
+            _first(
+                args.notification_retries,
+                _env_value(env, "STOPLIGA_NOTIFICATION_RETRIES"),
+                file_cfg.get("notification_retries"),
+                DEFAULTS.notification_retries,
+            ),
             field_name="notification_retries",
         ),
         notification_verify_tls=_parse_bool(
-            _first(_env_value(env, "STOPLIGA_NOTIFICATION_VERIFY_TLS"), file_cfg.get("notification_verify_tls"), DEFAULTS.notification_verify_tls),
+            _first(
+                _env_value(env, "STOPLIGA_NOTIFICATION_VERIFY_TLS"),
+                file_cfg.get("notification_verify_tls"),
+                DEFAULTS.notification_verify_tls,
+            ),
             field_name="notification_verify_tls",
         ),
-        notification_ca_file=_parse_path(value, field_name="notification_ca_file") if (value := _first(_env_value(env, "STOPLIGA_NOTIFICATION_CA_FILE"), file_cfg.get("notification_ca_file"))) else None,
+        notification_ca_file=_parse_path(value, field_name="notification_ca_file")
+        if (value := _first(_env_value(env, "STOPLIGA_NOTIFICATION_CA_FILE"), file_cfg.get("notification_ca_file")))
+        else None,
         gotify_verify_tls=(
             _parse_bool(value, field_name="gotify_verify_tls")
-            if (value := _first(_env_value(env, "STOPLIGA_GOTIFY_VERIFY_TLS"), file_cfg.get("gotify_verify_tls"))) is not None
+            if (value := _first(_env_value(env, "STOPLIGA_GOTIFY_VERIFY_TLS"), file_cfg.get("gotify_verify_tls")))
+            is not None
             else None
         ),
-        gotify_ca_file=_parse_path(value, field_name="gotify_ca_file") if (value := _first(_env_value(env, "STOPLIGA_GOTIFY_CA_FILE"), file_cfg.get("gotify_ca_file"))) else None,
+        gotify_ca_file=_parse_path(value, field_name="gotify_ca_file")
+        if (value := _first(_env_value(env, "STOPLIGA_GOTIFY_CA_FILE"), file_cfg.get("gotify_ca_file")))
+        else None,
         gotify_allow_plain_http=_parse_bool(
-            _first(_env_value(env, "STOPLIGA_GOTIFY_ALLOW_PLAIN_HTTP"), file_cfg.get("gotify_allow_plain_http"), DEFAULTS.gotify_allow_plain_http),
+            _first(
+                _env_value(env, "STOPLIGA_GOTIFY_ALLOW_PLAIN_HTTP"),
+                file_cfg.get("gotify_allow_plain_http"),
+                DEFAULTS.gotify_allow_plain_http,
+            ),
             field_name="gotify_allow_plain_http",
         ),
         telegram_verify_tls=(
             _parse_bool(value, field_name="telegram_verify_tls")
-            if (value := _first(_env_value(env, "STOPLIGA_TELEGRAM_VERIFY_TLS"), file_cfg.get("telegram_verify_tls"))) is not None
+            if (value := _first(_env_value(env, "STOPLIGA_TELEGRAM_VERIFY_TLS"), file_cfg.get("telegram_verify_tls")))
+            is not None
             else None
         ),
-        telegram_ca_file=_parse_path(value, field_name="telegram_ca_file") if (value := _first(_env_value(env, "STOPLIGA_TELEGRAM_CA_FILE"), file_cfg.get("telegram_ca_file"))) else None,
+        telegram_ca_file=_parse_path(value, field_name="telegram_ca_file")
+        if (value := _first(_env_value(env, "STOPLIGA_TELEGRAM_CA_FILE"), file_cfg.get("telegram_ca_file")))
+        else None,
     )
 
     validate_config(config, validate_connection=validate and not args.healthcheck)
@@ -858,22 +1057,26 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("notification_timeout must be > 0")
     if config.interval_seconds <= 0 and config.run_mode == "loop":
         raise ConfigError("loop mode requires interval_seconds > 0")
+    if config.health_max_age_seconds is not None and config.health_max_age_seconds <= 0:
+        raise ConfigError("health_max_age_seconds must be > 0 when set")
     if config.max_destinations < 1:
         raise ConfigError("max_destinations must be >= 1")
     if config.omada_group_size < 1:
         raise ConfigError("omada_group_size must be >= 1")
     if config.notification_retries < 1:
         raise ConfigError("notification_retries must be >= 1")
+    if config.log_level not in VALID_LOG_LEVELS:
+        raise ConfigError(f"log_level must be one of {', '.join(sorted(VALID_LOG_LEVELS))}, not {config.log_level!r}")
     if not config.route_name.strip():
         raise ConfigError("route_name must not be empty")
     if not config.site.strip():
         raise ConfigError("site must not be empty")
+    if len({config.state_file, config.lock_file, config.bootstrap_guard_file}) != 3:
+        raise ConfigError("state_file, lock_file and bootstrap_guard_file must be different paths")
     if config.invalid_entry_policy not in {"fail", "ignore"}:
         raise ConfigError(f"invalid_entry_policy must be fail|ignore, not {config.invalid_entry_policy!r}")
     if config.router_type not in get_args(RouterType):
-        raise ConfigError(
-            f"router_type must be one of {', '.join(get_args(RouterType))}, not {config.router_type!r}"
-        )
+        raise ConfigError(f"router_type must be one of {', '.join(get_args(RouterType))}, not {config.router_type!r}")
     if bool(config.vpn_name) != bool(config.target_clients):
         raise ConfigError("Automatic route creation requires both STOPLIGA_VPN_NAME and STOPLIGA_TARGETS")
     if config.router_type != "unifi" and (config.vpn_name or config.target_clients):
@@ -934,7 +1137,5 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
                     "OMADA_TARGET/STOPLIGA_OMADA_TARGET"
                 )
             if config.router_type == "opnsense":
-                raise ConfigError(
-                    "opnsense mode requires OPNSENSE_HOST, OPNSENSE_API_KEY and OPNSENSE_API_SECRET"
-                )
+                raise ConfigError("opnsense mode requires OPNSENSE_HOST, OPNSENSE_API_KEY and OPNSENSE_API_SECRET")
             raise ConfigError("unifi mode requires STOPLIGA_CONTROLLER_HOST (or UNIFI_HOST) and UNIFI_API_KEY")

@@ -58,6 +58,33 @@ docker compose up -d
 docker compose logs -f
 ```
 
+## Quality Checks
+
+Recommended local workflow:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[dev]"
+python -m ruff check src tests
+python -m ruff format --check src tests
+python -m mypy src
+python -m pytest
+python -m pip_audit
+python -m compileall run_stopliga.py src tests
+```
+
+If you prefer single commands after the environment is ready:
+
+```bash
+.venv/bin/python -m ruff check src tests
+.venv/bin/python -m ruff format --check src tests
+.venv/bin/python -m mypy src
+.venv/bin/python -m pytest
+.venv/bin/python -m pip_audit
+.venv/bin/python -m compileall run_stopliga.py src tests
+```
+
 ### Minimal `.env` for UniFi
 
 Your `.env` can stay as simple as this:

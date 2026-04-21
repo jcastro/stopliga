@@ -15,7 +15,10 @@ def _env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     if value is None or value == "":
         return default
-    parsed = int(value)
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
     if parsed < 0:
         raise ValueError(f"{name} must be >= 0")
     return parsed
@@ -91,4 +94,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:  # pragma: no cover - fatal container startup path
+        print(f"stopliga entrypoint error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

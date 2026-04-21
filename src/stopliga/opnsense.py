@@ -41,9 +41,17 @@ def _is_truthy_flag(value: Any) -> bool:
 
 
 def parse_alias_content(alias_record: dict[str, Any]) -> list[str]:
-    """Normalize IPs from an alias getItem response into a sorted canonical list."""
+    """Normalize IPs from an alias getItem response into a sorted canonical list.
+
+    Handles OPNsense content formats:
+    - string: newline-separated IPs
+    - list: direct IP strings
+    - dict with string values: {key: "ip", ...}
+    - dict with object values: {key: {value: "ip", selected: 1}, ...}
+    """
     content = alias_record.get("content", {})
     raw: list[str] = []
+
     if isinstance(content, str):
         raw = [line.strip() for line in content.splitlines() if line.strip()]
     elif isinstance(content, dict):
@@ -62,6 +70,7 @@ def parse_alias_content(alias_record: dict[str, Any]) -> list[str]:
             raw = [v.strip() for v in content.values() if isinstance(v, str) and v.strip()]
     elif isinstance(content, list):
         raw = [str(item).strip() for item in content if str(item).strip()]
+
     try:
         return sort_ip_tokens(raw)
     except Exception:

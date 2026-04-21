@@ -11,7 +11,7 @@ from typing import Any, Mapping, cast
 from urllib.parse import urlparse
 
 from .errors import ConfigError
-from .models import Config, InvalidEntryPolicy, RunMode
+from .models import Config, FirewallBackend, InvalidEntryPolicy, RunMode
 
 
 DEFAULTS = Config()
@@ -53,29 +53,29 @@ def _parse_path(value: Any, *, field_name: str) -> Path:
     raise ConfigError(f"Invalid path value for {field_name}: {value!r}")
 
 
-def _validate_unifi_host(host: str) -> None:
+def _validate_host(host: str, *, field_name: str) -> None:
     candidate = host.strip()
     if not candidate:
-        raise ConfigError("UNIFI_HOST must not be empty")
+        raise ConfigError(f"{field_name} must not be empty")
     if candidate != host:
-        raise ConfigError("UNIFI_HOST must not contain leading or trailing whitespace")
+        raise ConfigError(f"{field_name} must not contain leading or trailing whitespace")
     if "://" in candidate or "/" in candidate or "@" in candidate or "?" in candidate or "#" in candidate:
-        raise ConfigError("UNIFI_HOST must be a hostname or IP address without scheme, path or credentials")
+        raise ConfigError(f"{field_name} must be a hostname or IP address without scheme, path or credentials")
     if candidate.startswith("[") and candidate.endswith("]"):
         inner = candidate[1:-1]
         try:
             ipaddress.IPv6Address(inner)
         except ipaddress.AddressValueError as exc:
-            raise ConfigError(f"UNIFI_HOST contains an invalid bracketed IPv6 address: {candidate!r}") from exc
+            raise ConfigError(f"{field_name} contains an invalid bracketed IPv6 address: {candidate!r}") from exc
         return
     try:
         ipaddress.ip_address(candidate)
     except ValueError:
         allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
         if any(ch not in allowed for ch in candidate):
-            raise ConfigError(f"UNIFI_HOST contains unsupported characters: {candidate!r}")
+            raise ConfigError(f"{field_name} contains unsupported characters: {candidate!r}")
         if ".." in candidate or candidate.startswith(".") or candidate.endswith(".") or candidate.startswith("-") or candidate.endswith("-"):
-            raise ConfigError(f"UNIFI_HOST is not a valid hostname: {candidate!r}")
+            raise ConfigError(f"{field_name} is not a valid hostname: {candidate!r}")
     else:
         return
 
@@ -158,14 +158,16 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
 
     app = raw.get("app", {})
     unifi = raw.get("unifi", {})
+    opnsense = raw.get("opnsense", {})
     feeds = raw.get("feeds", {})
     bootstrap = raw.get("bootstrap", {})
     notifications = raw.get("notifications", {})
-    if not all(isinstance(section, dict) for section in (app, unifi, feeds, bootstrap, notifications)):
-        raise ConfigError("Config sections app/unifi/feeds/bootstrap/notifications must be TOML tables")
+    if not all(isinstance(section, dict) for section in (app, unifi, opnsense, feeds, bootstrap, notifications)):
+        raise ConfigError("Config sections app/unifi/opnsense/feeds/bootstrap/notifications must be TOML tables")
 
     return {
         "run_mode": app.get("run_mode"),
+        "firewall_backend": app.get("firewall_backend"),
         "host": unifi.get("host"),
         "port": unifi.get("port"),
         "api_key": unifi.get("api_key"),
@@ -176,6 +178,11 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "ip_list_url": feeds.get("ip_list_url"),
         "unifi_verify_tls": unifi.get("verify_tls"),
         "unifi_ca_file": unifi.get("ca_file"),
+        "opnsense_host": opnsense.get("host"),
+        "opnsense_api_key": opnsense.get("api_key"),
+        "opnsense_api_secret": opnsense.get("api_secret"),
+        "opnsense_verify_tls": opnsense.get("verify_tls"),
+        "opnsense_ca_file": opnsense.get("ca_file"),
         "feed_verify_tls": feeds.get("verify_tls"),
         "feed_ca_file": feeds.get("ca_file"),
         "feed_allow_private_hosts": feeds.get("allow_private_hosts"),
@@ -343,8 +350,13 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         DEFAULTS.log_level,
     )
 
+    firewall_backend_raw = str(_first(_env_value(env, "STOPLIGA_FIREWALL_BACKEND"), file_cfg.get("firewall_backend"), DEFAULTS.firewall_backend))
+    if firewall_backend_raw not in {"unifi", "opnsense"}:
+        raise ConfigError(f"STOPLIGA_FIREWALL_BACKEND must be 'unifi' or 'opnsense', not {firewall_backend_raw!r}")
+
     config = Config(
         run_mode=cast(RunMode, _normalize_run_mode(args, env, file_cfg)),
+        firewall_backend=cast(FirewallBackend, firewall_backend_raw),
         host=_first(args.host, _env_value(env, "UNIFI_HOST"), file_cfg.get("host"), DEFAULTS.host),
         port=_parse_int(_first(args.port, _env_value(env, "UNIFI_PORT"), file_cfg.get("port"), DEFAULTS.port), field_name="port"),
         api_key=_first(args.api_key, _env_value(env, "UNIFI_API_KEY"), file_cfg.get("api_key"), DEFAULTS.api_key),
@@ -360,6 +372,22 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             field_name="unifi_verify_tls",
         ),
         unifi_ca_file=_parse_path(value, field_name="unifi_ca_file") if (value := _first(args.unifi_ca_file, _env_value(env, "UNIFI_CA_FILE"), file_cfg.get("unifi_ca_file"))) else None,
+        opnsense_host=_first(_env_value(env, "OPNSENSE_HOST"), file_cfg.get("opnsense_host"), DEFAULTS.opnsense_host),
+        opnsense_api_key=_first(
+            _env_secret_first(env, field_name="opnsense_api_key", key="OPNSENSE_API_KEY", key_file="OPNSENSE_API_KEY_FILE"),
+            file_cfg.get("opnsense_api_key"),
+            DEFAULTS.opnsense_api_key,
+        ),
+        opnsense_api_secret=_first(
+            _env_secret_first(env, field_name="opnsense_api_secret", key="OPNSENSE_API_SECRET", key_file="OPNSENSE_API_SECRET_FILE"),
+            file_cfg.get("opnsense_api_secret"),
+            DEFAULTS.opnsense_api_secret,
+        ),
+        opnsense_verify_tls=_parse_bool(
+            _first(_env_value(env, "OPNSENSE_VERIFY_TLS"), file_cfg.get("opnsense_verify_tls"), DEFAULTS.opnsense_verify_tls),
+            field_name="opnsense_verify_tls",
+        ),
+        opnsense_ca_file=_parse_path(value, field_name="opnsense_ca_file") if (value := _first(_env_value(env, "OPNSENSE_CA_FILE"), file_cfg.get("opnsense_ca_file"))) else None,
         feed_verify_tls=_parse_bool(
             _first(_env_value(env, "STOPLIGA_FEED_VERIFY_TLS"), file_cfg.get("feed_verify_tls"), DEFAULTS.feed_verify_tls),
             field_name="feed_verify_tls",
@@ -516,7 +544,7 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("site must not be empty")
     if config.invalid_entry_policy not in {"fail", "ignore"}:
         raise ConfigError(f"invalid_entry_policy must be fail|ignore, not {config.invalid_entry_policy!r}")
-    if bool(config.vpn_name) != bool(config.target_clients):
+    if config.firewall_backend == "unifi" and bool(config.vpn_name) != bool(config.target_clients):
         raise ConfigError("Automatic route creation requires both STOPLIGA_VPN_NAME and STOPLIGA_TARGETS")
     if bool(config.gotify_url) != bool(config.gotify_token):
         raise ConfigError("Gotify notifications require both STOPLIGA_GOTIFY_URL and STOPLIGA_GOTIFY_TOKEN")
@@ -532,7 +560,16 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
     if config.telegram_topic_id is not None and config.telegram_topic_id <= 0:
         raise ConfigError("STOPLIGA_TELEGRAM_TOPIC_ID must be > 0")
     if validate_connection:
-        _validate_unifi_host(config.host or "")
+        if config.firewall_backend == "opnsense":
+            if not config.opnsense_host:
+                raise ConfigError("OPNSENSE_HOST is required when STOPLIGA_FIREWALL_BACKEND=opnsense")
+            if not config.opnsense_api_key or not config.opnsense_api_secret:
+                raise ConfigError("OPNSENSE_API_KEY and OPNSENSE_API_SECRET are required when STOPLIGA_FIREWALL_BACKEND=opnsense")
+            _validate_host(config.opnsense_host, field_name="OPNSENSE_HOST")
+        else:
+            _validate_host(config.host or "", field_name="UNIFI_HOST")
+            if not config.has_local_api_access():
+                raise ConfigError("local mode requires UNIFI_HOST and UNIFI_API_KEY")
     if config.gotify_url:
         _validate_gotify_url(config.gotify_url, allow_plain_http=config.gotify_allow_plain_http)
     if config.telegram_bot_token:
@@ -540,6 +577,3 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
             raise ConfigError("telegram_verify_tls=false is not supported; Telegram notifications must verify TLS")
     _validate_feed_url(config.status_url, field_name="status_url", allow_private_hosts=config.feed_allow_private_hosts)
     _validate_feed_url(config.ip_list_url, field_name="ip_list_url", allow_private_hosts=config.feed_allow_private_hosts)
-    if validate_connection:
-        if not config.has_local_api_access():
-            raise ConfigError("local mode requires UNIFI_HOST and UNIFI_API_KEY")

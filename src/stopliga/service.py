@@ -12,6 +12,7 @@ from .logging_utils import log_context, log_event
 from .models import BootstrapPreview, Config, FeedSnapshot, StateSnapshot, SyncResult
 from .notifier import send_notifications
 from .state import StateStore, utcnow_iso
+from .opnsense import sync_opnsense
 from .unifi import (
     ALL_CLIENTS_TARGET,
     BaseRouteBackend,
@@ -413,6 +414,9 @@ class StopLigaService:
         )
 
     def _run_once(self, feed_snapshot: FeedSnapshot) -> SyncResult:
+        if self.config.firewall_backend == "opnsense":
+            return sync_opnsense(self.config, feed_snapshot)
+
         client = UniFiClient(self.config)
         client.authenticate()
         site_context = client.resolve_site_context()
@@ -532,7 +536,7 @@ class StopLigaService:
                 "sync_start",
                 route=self.config.route_name,
                 site=self.config.site,
-                mode="local",
+                mode=self.config.firewall_backend,
                 dry_run=self.config.dry_run,
             )
             reconciliation_pending = False

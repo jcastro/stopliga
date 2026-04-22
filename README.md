@@ -70,6 +70,8 @@ STOPLIGA_SYNC_INTERVAL_SECONDS=300
 STOPLIGA_ROUTE_NAME=StopLiga
 ```
 
+For UniFi Network `10.3.x` upgrade notes and a post-upgrade smoke test, see [docs/unifi-network-10.3-validation.md](docs/unifi-network-10.3-validation.md).
+
 ### Omada
 
 You need:

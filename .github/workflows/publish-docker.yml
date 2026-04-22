@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 concurrency:
   group: publish-docker-${{ github.ref }}
@@ -14,10 +13,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -67,6 +68,7 @@ jobs:
             org.opencontainers.image.description=Synchronize a managed router route or rule with live block status and a public IP feed.
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -80,3 +82,67 @@ jobs:
             VERSION=${{ steps.meta.outputs.version || steps.app_version.outputs.value }}
             BUILD_DATE=${{ steps.build_date.outputs.value }}
             VCS_REF=${{ github.sha }}
+
+      - name: Prepare GitHub release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.value }}
+          IMAGE_VERSION: ${{ steps.meta.outputs.version || steps.app_version.outputs.value }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          previous_tag="$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)"
+
+          if [ -n "$previous_tag" ]; then
+            changes="$(git log --no-merges --invert-grep --grep '^release: prepare ' --format='- %s (`%h`)' "${previous_tag}..${GITHUB_SHA}")"
+            compare_url="https://github.com/${GITHUB_REPOSITORY}/compare/${previous_tag}...${tag}"
+          else
+            changes="$(git log --no-merges --invert-grep --grep '^release: prepare ' --format='- %s (`%h`)')"
+            compare_url=""
+          fi
+
+          if [ -z "$changes" ]; then
+            if [ -n "$previous_tag" ]; then
+              changes="$(git log --no-merges --format='- %s (`%h`)' "${previous_tag}..${GITHUB_SHA}")"
+            else
+              changes="$(git log --no-merges --format='- %s (`%h`)')"
+            fi
+          fi
+
+          {
+            echo "# ${tag}"
+            echo
+            echo "## Container image"
+            echo
+            echo "- \`${IMAGE_NAME}:${IMAGE_VERSION}\`"
+            echo "- \`${IMAGE_NAME}:latest\`"
+            echo "- \`${IMAGE_NAME}@${IMAGE_DIGEST}\`"
+            echo
+            echo "## What's changed"
+            echo
+            printf '%s\n' "$changes"
+            if [ -n "$compare_url" ]; then
+              echo
+              echo "Full diff: ${compare_url}"
+            fi
+          } > release-notes.md
+
+      - name: Create or update GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" \
+              --verify-tag \
+              --title "$tag" \
+              --notes-file release-notes.md
+            exit 0
+          fi
+
+          gh release create "$tag" \
+            --verify-tag \
+            --title "$tag" \
+            --notes-file release-notes.md

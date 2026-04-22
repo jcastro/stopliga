@@ -9,6 +9,7 @@ import sys
 
 DEFAULT_UID = 10001
 DEFAULT_GID = 10001
+DEFAULT_CONFIG_FILE = pathlib.Path("/config/config.toml")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -32,6 +33,13 @@ def _candidate_paths() -> list[tuple[pathlib.Path, bool]]:
     ]
     parents = [(path.parent, False) for path, _ in configured]
     return parents + configured
+
+
+def _maybe_enable_default_config_file() -> None:
+    if os.environ.get("STOPLIGA_CONFIG_FILE"):
+        return
+    if DEFAULT_CONFIG_FILE.is_file():
+        os.environ["STOPLIGA_CONFIG_FILE"] = str(DEFAULT_CONFIG_FILE)
 
 
 def _ensure_writable_paths(uid: int, gid: int) -> None:
@@ -84,6 +92,7 @@ def _drop_privileges(uid: int, gid: int) -> None:
 def main() -> int:
     uid = _env_int("STOPLIGA_UID", DEFAULT_UID)
     gid = _env_int("STOPLIGA_GID", DEFAULT_GID)
+    _maybe_enable_default_config_file()
 
     if os.geteuid() == 0:
         _ensure_writable_paths(uid, gid)

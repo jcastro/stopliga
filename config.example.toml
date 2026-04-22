@@ -1,83 +1,69 @@
+# StopLiga starter config file
+#
+# Optional. Most users can skip this file and use only .env.
+# If you do use it, keep secrets in .env and non-secret settings here.
+
 [app]
-# Preferred backend selector. `router_type` still works too.
-# Run mode for the service. Use "loop" for normal operation.
-run_mode = "loop"
+# Router to use: unifi, omada, opnsense
 backend = "unifi"
 
-# How often StopLiga runs a full sync, in seconds.
+# Normal Docker use should stay in loop mode.
+run_mode = "loop"
+
+# Check interval in seconds.
 interval_seconds = 300
 
-# Exact managed route or rule name that StopLiga should control.
+# Name of the managed route or rule.
 route_name = "StopLiga"
-destination_field = "auto"
-request_timeout = 15
-retries = 4
 
-# Safety limit for HTTP response size, in bytes.
-max_response_bytes = 2097152
-dry_run = false
-invalid_entry_policy = "fail"
-max_destinations = 2048
-state_file = "/data/state.json"
-lock_file = "/data/stopliga.lock"
+# Optional simple settings:
 log_level = "INFO"
-dump_payloads_on_error = false
+dry_run = false
 
 [feeds]
 status_url = "dns://blocked.dns.hayahora.futbol"
 ip_list_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
 verify_tls = true
-allow_private_hosts = false
-strict_consistency = true
 
 [controller]
-# Shared controller connection settings for UniFi and Omada.
-host = "192.168.1.1"
+# Use this section for UniFi or Omada.
+host = "10.0.1.1"
 port = 443
 site = "default"
 verify_tls = false
-# ca_file = "/path/to/ca.pem"
 
 [unifi]
-# UniFi-specific authentication.
-api_key = "replace-me"
+# Keep the API key in .env if possible.
+# api_key = "replace-me"
 
 [omada]
-# Omada Open API client credentials and controller/cloud ID.
+# Uncomment and fill these if backend = "omada".
+# base_url = "https://omada-controller.example:8043"
 # client_id = "replace-me"
 # client_secret = "replace-me"
 # omadac_id = "replace-me"
-
-# Route traffic through either a WAN or a VPN target.
 # target_type = "vpn"
 # target = "WG Main"
-
-# Optional subset of LAN networks to use as source. Leave unset to use all LANs.
 # source_networks = ["LAN", "IoT"]
-
-# Conservative chunk size for managed IP Groups.
 # group_size = 16
-
-[opnsense]
-# OPNsense firewall host or IP address.
-# host = "192.168.1.1"
-
-# OPNsense API key and secret.
-# api_key = "replace-me"
-# api_secret = "replace-me"
-
-# Optional alias override. Defaults to a sanitized version of route_name.
-# alias_name = "StopLiga"
-
-# Set to false only if your OPNsense uses a self-signed certificate.
 # verify_tls = true
 
+[opnsense]
+# Uncomment and fill these if backend = "opnsense".
+# host = "fw.example.local"
+# api_key = "replace-me"
+# api_secret = "replace-me"
+# verify_tls = true
+# alias_name = "StopLiga"
+
 [notifications]
+# Optional. Most users can ignore this section.
+#
+# Gotify
 # gotify_url = "https://gotify.example.com"
 # gotify_token = "replace-me"
-# gotify_priority = 5
-# gotify_allow_plain_http = false
-# gotify_verify_tls = true
+#
+# Telegram
 # telegram_bot_token = "123456:replace-me"
 # telegram_chat_id = "123456789"
 # telegram_group_id = "-1001234567890"

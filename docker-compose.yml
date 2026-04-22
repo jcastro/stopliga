@@ -1,8 +1,13 @@
 services:
   stopliga:
-    image: ${STOPLIGA_IMAGE:-ghcr.io/jcastro/stopliga:0.1.12}
+    # Override STOPLIGA_IMAGE in your shell or .env if you want to pin a
+    # different release. For local development you can temporarily replace this
+    # with `build: .`.
+    image: ${STOPLIGA_IMAGE:-ghcr.io/jcastro/stopliga:0.1.13}
     container_name: stopliga
     restart: unless-stopped
+
+    # Small hardening defaults that still work well with bind-mounted data.
     init: true
     security_opt:
       - no-new-privileges:true
@@ -11,7 +16,15 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
+
+    # Backward-compatible: existing .env-only deployments keep working.
     env_file:
       - .env
+
+    # ./data is required for runtime state.
+    # ./config is optional:
+    # - if ./config/config.toml exists, StopLiga auto-detects it
+    # - if it does not exist, classic .env-only setups still work
     volumes:
       - ./data:/data
+      - ./config:/config:ro

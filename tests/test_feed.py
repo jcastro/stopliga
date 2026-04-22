@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
+import socket
 import sys
 
 
@@ -15,7 +16,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from stopliga.errors import InvalidFeedError  # noqa: E402
-from stopliga.feed import load_feed_snapshot, parse_ip_list, parse_status_payload  # noqa: E402
+from stopliga.feed import load_feed_snapshot, parse_ip_list, parse_status_payload, resolve_dns_addresses  # noqa: E402
 from stopliga.models import Config  # noqa: E402
 from stopliga.state import StateStore  # noqa: E402
 from stopliga.unifi import build_ip_objects, build_route_update_template  # noqa: E402
@@ -227,6 +228,30 @@ class FeedLoadingTests(unittest.TestCase):
         self.assertEqual(snapshot.destinations, ["192.0.2.1"])
         self.assertEqual(snapshot.raw_status["source"], "dns")
         dns_mock.assert_called_once_with("blocked.dns.hayahora.futbol", retries=1)
+
+    def test_load_feed_snapshot_treats_empty_dns_status_as_not_blocked(self) -> None:
+        config = Config(
+            status_url="dns://blocked.dns.hayahora.futbol",
+            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
+            retries=1,
+        )
+
+        with (
+            patch("stopliga.feed.resolve_dns_addresses", return_value=[]) as dns_mock,
+            patch("stopliga.feed.fetch_text", return_value="192.0.2.1\n"),
+        ):
+            snapshot = load_feed_snapshot(config)
+
+        self.assertFalse(snapshot.is_blocked)
+        self.assertEqual(snapshot.destinations, ["192.0.2.1"])
+        self.assertEqual(snapshot.raw_status["source"], "dns")
+        self.assertEqual(snapshot.raw_status["recordCount"], 0)
+        dns_mock.assert_called_once_with("blocked.dns.hayahora.futbol", retries=1)
+
+    def test_resolve_dns_addresses_returns_empty_list_when_dns_has_no_records(self) -> None:
+        no_record_errno = getattr(socket, "EAI_NONAME", 8)
+        with patch("stopliga.feed.socket.getaddrinfo", side_effect=socket.gaierror(no_record_errno, "no records")):
+            self.assertEqual(resolve_dns_addresses("blocked.dns.hayahora.futbol", retries=1), [])
 
 
 class RoutePayloadTests(unittest.TestCase):

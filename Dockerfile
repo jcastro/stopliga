@@ -1,5 +1,5 @@
 ARG PYTHON_BASE=python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286
-ARG VERSION=0.1.12
+ARG VERSION=0.1.13
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga
@@ -25,7 +25,7 @@ RUN pip install --upgrade pip==26.0.1 setuptools==82.0.1 wheel==0.46.3 \
 
 FROM ${PYTHON_BASE} AS runtime
 
-ARG VERSION=0.1.12
+ARG VERSION=0.1.13
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga
@@ -39,7 +39,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     STOPLIGA_LOCK_FILE=/data/stopliga.lock
 
 LABEL org.opencontainers.image.title="StopLiga" \
-      org.opencontainers.image.description="Synchronize a UniFi policy-based route with a public GitHub IP feed." \
+      org.opencontainers.image.description="Synchronize a managed router route or rule with live block status and a public IP feed." \
       org.opencontainers.image.url="${SOURCE_URL}" \
       org.opencontainers.image.source="${SOURCE_URL}" \
       org.opencontainers.image.version="${VERSION}" \

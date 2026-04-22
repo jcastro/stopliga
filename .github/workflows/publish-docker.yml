@@ -64,7 +64,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           labels: |
             org.opencontainers.image.title=StopLiga
-            org.opencontainers.image.description=Synchronize a UniFi policy-based route with a public GitHub IP feed.
+            org.opencontainers.image.description=Synchronize a managed router route or rule with live block status and a public IP feed.
 
       - name: Build and push
         uses: docker/build-push-action@v7

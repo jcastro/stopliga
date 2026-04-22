@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stopliga"
-version = "0.1.12"
-description = "Synchronize a UniFi policy-based route with a public GitHub IP feed."
+version = "0.1.13"
+description = "Synchronize a managed router route or rule with live block status and a public IP feed."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

@@ -25,7 +25,7 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.12"
+DEFAULT_USER_AGENT = "stopliga/0.1.13"
 
 
 @dataclass(frozen=True)
@@ -227,6 +227,14 @@ def _parse_dns_feed_host(url: str) -> str | None:
     return hostname
 
 
+def _is_dns_no_records_error(exc: socket.gaierror) -> bool:
+    no_record_errnos = {
+        getattr(socket, "EAI_NONAME", None),
+        getattr(socket, "EAI_NODATA", None),
+    }
+    return exc.errno in {value for value in no_record_errnos if value is not None}
+
+
 def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
     """Resolve a DNS hostname into a deterministic list of IP addresses."""
 
@@ -245,7 +253,25 @@ def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
                     resolved_values.append(candidate)
             addresses = sort_ip_tokens(resolved_values)
             return [address for address in addresses if "/" not in address]
-        except (socket.gaierror, OSError, ValueError) as exc:
+        except socket.gaierror as exc:
+            if _is_dns_no_records_error(exc):
+                log_event(logging.getLogger("stopliga.feed"), logging.INFO, "dns_no_records", url=f"dns://{hostname}")
+                return []
+            last_error = exc
+            if attempt < retries:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "feed_retry",
+                    url=f"dns://{hostname}",
+                    attempt=attempt,
+                    retries=retries,
+                    error=exc,
+                )
+                sleep_with_backoff(attempt)
+                continue
+            raise NetworkError(f"Unable to resolve dns://{hostname}: {exc}") from exc
+        except (OSError, ValueError) as exc:
             last_error = exc
             if attempt < retries:
                 log_event(

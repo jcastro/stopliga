@@ -42,3 +42,29 @@ class DockerEntrypointTests(unittest.TestCase):
         self.assertIn((state_file, True), candidates)
         self.assertIn((lock_file, True), candidates)
         self.assertIn((guard_file, True), candidates)
+
+    def test_default_config_file_is_enabled_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir) / "config"
+            config_dir.mkdir()
+            config_file = config_dir / "config.toml"
+            config_file.write_text('[app]\nbackend = "unifi"\n', encoding="utf-8")
+            with (
+                mock.patch.object(entrypoint, "DEFAULT_CONFIG_FILE", config_file),
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                entrypoint._maybe_enable_default_config_file()
+                self.assertEqual(str(config_file), entrypoint.os.environ["STOPLIGA_CONFIG_FILE"])
+
+    def test_existing_config_env_wins_over_default_config_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir) / "config"
+            config_dir.mkdir()
+            config_file = config_dir / "config.toml"
+            config_file.write_text('[app]\nbackend = "unifi"\n', encoding="utf-8")
+            with (
+                mock.patch.object(entrypoint, "DEFAULT_CONFIG_FILE", config_file),
+                mock.patch.dict("os.environ", {"STOPLIGA_CONFIG_FILE": "/custom/config.toml"}, clear=True),
+            ):
+                entrypoint._maybe_enable_default_config_file()
+                self.assertEqual("/custom/config.toml", entrypoint.os.environ["STOPLIGA_CONFIG_FILE"])

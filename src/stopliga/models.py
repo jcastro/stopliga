@@ -10,7 +10,7 @@ from typing import Any, Literal
 RunMode = Literal["once", "loop"]
 InvalidEntryPolicy = Literal["fail", "ignore"]
 LegacyFirewallBackend = Literal["unifi", "opnsense"]
-RouterType = Literal["unifi", "omada", "opnsense"]
+RouterType = Literal["unifi", "omada", "opnsense", "mikrotik"]
 OmadaTargetType = Literal["wan", "vpn"]
 
 
@@ -35,6 +35,16 @@ class Config:
     omada_verify_tls: bool = True
     omada_ca_file: Path | None = None
     omada_group_size: int = 16
+    mikrotik_username: str | None = None
+    mikrotik_password: str | None = None
+    mikrotik_verify_tls: bool = True
+    mikrotik_ca_file: Path | None = None
+    mikrotik_routing_table: str | None = None
+    mikrotik_gateway: str | None = None
+    mikrotik_route_distance: int = 1
+    mikrotik_address_list: str | None = None
+    mikrotik_in_interface: str | None = None
+    mikrotik_in_interface_list: str | None = None
     status_url: str = "dns://blocked.dns.hayahora.futbol"
     ip_list_url: str = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
     unifi_verify_tls: bool = True
@@ -106,6 +116,14 @@ class Config:
                 and self.omada_omadac_id
                 and self.omada_target_type
                 and self.omada_target
+            )
+        if self.router_type == "mikrotik":
+            return bool(
+                self.host
+                and self.mikrotik_username
+                and self.mikrotik_password
+                and self.mikrotik_routing_table
+                and self.mikrotik_gateway
             )
         if self.router_type == "opnsense":
             return bool(self.opnsense_host and self.opnsense_api_key and self.opnsense_api_secret)

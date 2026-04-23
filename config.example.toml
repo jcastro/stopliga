@@ -4,7 +4,7 @@
 # If you do use it, keep secrets in .env and non-secret settings here.
 
 [app]
-# Router to use: unifi, omada, opnsense
+# Router to use: unifi, omada, mikrotik, opnsense
 backend = "unifi"
 
 # Normal Docker use should stay in loop mode.
@@ -26,7 +26,7 @@ ip_list_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/lalig
 verify_tls = true
 
 [controller]
-# Use this section for UniFi or Omada.
+# Use this section for UniFi, Omada or MikroTik.
 host = "10.0.1.1"
 port = 443
 site = "default"
@@ -46,6 +46,18 @@ verify_tls = false
 # target = "WG Main"
 # source_networks = ["LAN", "IoT"]
 # group_size = 16
+# verify_tls = true
+
+[mikrotik]
+# Uncomment and fill these if backend = "mikrotik".
+# username = "admin"
+# password = "replace-me"
+# routing_table = "vpn_stopliga"
+# gateway = "wireguard-out1"
+# address_list = "StopLigaList"
+# in_interface = "bridge"
+# in_interface_list = "LAN"
+# route_distance = 1
 # verify_tls = true
 
 [opnsense]

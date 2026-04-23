@@ -223,16 +223,17 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
     controller = raw.get("controller", {})
     unifi = raw.get("unifi", {})
     omada = raw.get("omada", {})
+    mikrotik = raw.get("mikrotik", {})
     opnsense = raw.get("opnsense", {})
     feeds = raw.get("feeds", {})
     bootstrap = raw.get("bootstrap", {})
     notifications = raw.get("notifications", {})
     if not all(
         isinstance(section, dict)
-        for section in (app, controller, unifi, omada, opnsense, feeds, bootstrap, notifications)
+        for section in (app, controller, unifi, omada, mikrotik, opnsense, feeds, bootstrap, notifications)
     ):
         raise ConfigError(
-            "Config sections app/controller/unifi/omada/opnsense/feeds/bootstrap/notifications must be TOML tables"
+            "Config sections app/controller/unifi/omada/mikrotik/opnsense/feeds/bootstrap/notifications must be TOML tables"
         )
 
     return {
@@ -265,6 +266,18 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "omada_verify_tls": omada.get("verify_tls"),
         "omada_ca_file": omada.get("ca_file"),
         "omada_group_size": omada.get("group_size"),
+        "mikrotik_host": mikrotik.get("host"),
+        "mikrotik_port": mikrotik.get("port"),
+        "mikrotik_username": mikrotik.get("username"),
+        "mikrotik_password": mikrotik.get("password"),
+        "mikrotik_verify_tls": mikrotik.get("verify_tls"),
+        "mikrotik_ca_file": mikrotik.get("ca_file"),
+        "mikrotik_routing_table": mikrotik.get("routing_table"),
+        "mikrotik_gateway": mikrotik.get("gateway"),
+        "mikrotik_route_distance": mikrotik.get("route_distance"),
+        "mikrotik_address_list": mikrotik.get("address_list"),
+        "mikrotik_in_interface": mikrotik.get("in_interface"),
+        "mikrotik_in_interface_list": mikrotik.get("in_interface_list"),
         "status_url": feeds.get("status_url"),
         "ip_list_url": feeds.get("ip_list_url"),
         "unifi_verify_tls": unifi.get("verify_tls"),
@@ -339,12 +352,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--omada-group-size", type=int, default=None, help="Maximum IPv4 subnets per managed Omada IP Group"
     )
+    parser.add_argument("--mikrotik-username", default=None, help="MikroTik RouterOS username")
+    parser.add_argument("--mikrotik-password", default=None, help="MikroTik RouterOS password")
+    parser.add_argument(
+        "--mikrotik-routing-table", default=None, help="MikroTik routing table to steer marked traffic into"
+    )
+    parser.add_argument("--mikrotik-gateway", default=None, help="MikroTik gateway or interface for the managed table")
+    parser.add_argument("--mikrotik-route-distance", type=int, default=None, help="Managed MikroTik route distance")
+    parser.add_argument("--mikrotik-address-list", default=None, help="Managed MikroTik firewall address list name")
+    parser.add_argument("--mikrotik-in-interface", default=None, help="Optional MikroTik in-interface matcher")
+    parser.add_argument(
+        "--mikrotik-in-interface-list",
+        default=None,
+        help="Optional MikroTik in-interface-list matcher",
+    )
     parser.add_argument("--status-url", default=None, help="Status feed URL (http/https or dns://hostname)")
     parser.add_argument("--ip-list-url", default=None, help="IP list TXT URL")
     parser.add_argument("--state-file", default=None, help="State file path")
     parser.add_argument("--lock-file", default=None, help="Lock file path")
     parser.add_argument("--ca-file", dest="unifi_ca_file", default=None, help="CA bundle for UniFi TLS")
     parser.add_argument("--omada-ca-file", default=None, help="CA bundle for Omada TLS")
+    parser.add_argument("--mikrotik-ca-file", default=None, help="CA bundle for MikroTik TLS")
     parser.add_argument("--vpn-name", default=None, help="Exact VPN client network name for automatic route creation")
     parser.add_argument(
         "--targets", default=None, help="Comma-separated client names or MACs for automatic route creation"
@@ -591,6 +619,36 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         _env_value(env, "STOPLIGA_OMADA_CA_FILE"),
         file_cfg.get("omada_ca_file"),
     )
+    mikrotik_host = _first(
+        args.host,
+        controller_host,
+        _env_value(env, "MIKROTIK_HOST"),
+        _env_value(env, "STOPLIGA_MIKROTIK_HOST"),
+        file_cfg.get("mikrotik_host"),
+        DEFAULTS.host,
+    )
+    mikrotik_port = _first(
+        args.port,
+        controller_port,
+        _env_value(env, "MIKROTIK_PORT"),
+        _env_value(env, "STOPLIGA_MIKROTIK_PORT"),
+        file_cfg.get("mikrotik_port"),
+        DEFAULTS.port,
+    )
+    mikrotik_verify_tls = _first(
+        controller_verify_tls,
+        _env_value(env, "MIKROTIK_VERIFY_TLS"),
+        _env_value(env, "STOPLIGA_MIKROTIK_VERIFY_TLS"),
+        file_cfg.get("mikrotik_verify_tls"),
+        DEFAULTS.mikrotik_verify_tls,
+    )
+    mikrotik_ca_file = _first(
+        args.mikrotik_ca_file,
+        controller_ca_file,
+        _env_value(env, "MIKROTIK_CA_FILE"),
+        _env_value(env, "STOPLIGA_MIKROTIK_CA_FILE"),
+        file_cfg.get("mikrotik_ca_file"),
+    )
 
     log_level = (
         "DEBUG"
@@ -614,8 +672,8 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
                 DEFAULTS.firewall_backend,
             ),
         ),
-        host=cast(str | None, unifi_host),
-        port=_parse_int(unifi_port, field_name="port"),
+        host=cast(str | None, mikrotik_host if router_type == "mikrotik" else unifi_host),
+        port=_parse_int(mikrotik_port if router_type == "mikrotik" else unifi_port, field_name="port"),
         api_key=_first(
             args.api_key,
             _env_secret_first(
@@ -715,6 +773,77 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
                 DEFAULTS.omada_group_size,
             ),
             field_name="omada_group_size",
+        ),
+        mikrotik_username=_first(
+            args.mikrotik_username,
+            _env_value(env, "MIKROTIK_USERNAME"),
+            _env_value(env, "STOPLIGA_MIKROTIK_USERNAME"),
+            file_cfg.get("mikrotik_username"),
+            DEFAULTS.mikrotik_username,
+        ),
+        mikrotik_password=_first(
+            args.mikrotik_password,
+            _env_secret_first(
+                env,
+                field_name="mikrotik_password",
+                key="MIKROTIK_PASSWORD",
+                key_file="MIKROTIK_PASSWORD_FILE",
+            ),
+            _env_secret_first(
+                env,
+                field_name="mikrotik_password",
+                key="STOPLIGA_MIKROTIK_PASSWORD",
+                key_file="STOPLIGA_MIKROTIK_PASSWORD_FILE",
+            ),
+            file_cfg.get("mikrotik_password"),
+            DEFAULTS.mikrotik_password,
+        ),
+        mikrotik_verify_tls=_parse_bool(mikrotik_verify_tls, field_name="mikrotik_verify_tls"),
+        mikrotik_ca_file=_parse_path(value, field_name="mikrotik_ca_file") if (value := mikrotik_ca_file) else None,
+        mikrotik_routing_table=_first(
+            args.mikrotik_routing_table,
+            _env_value(env, "MIKROTIK_ROUTING_TABLE"),
+            _env_value(env, "STOPLIGA_MIKROTIK_ROUTING_TABLE"),
+            file_cfg.get("mikrotik_routing_table"),
+            DEFAULTS.mikrotik_routing_table,
+        ),
+        mikrotik_gateway=_first(
+            args.mikrotik_gateway,
+            _env_value(env, "MIKROTIK_GATEWAY"),
+            _env_value(env, "STOPLIGA_MIKROTIK_GATEWAY"),
+            file_cfg.get("mikrotik_gateway"),
+            DEFAULTS.mikrotik_gateway,
+        ),
+        mikrotik_route_distance=_parse_int(
+            _first(
+                args.mikrotik_route_distance,
+                _env_value(env, "MIKROTIK_ROUTE_DISTANCE"),
+                _env_value(env, "STOPLIGA_MIKROTIK_ROUTE_DISTANCE"),
+                file_cfg.get("mikrotik_route_distance"),
+                DEFAULTS.mikrotik_route_distance,
+            ),
+            field_name="mikrotik_route_distance",
+        ),
+        mikrotik_address_list=_first(
+            args.mikrotik_address_list,
+            _env_value(env, "MIKROTIK_ADDRESS_LIST"),
+            _env_value(env, "STOPLIGA_MIKROTIK_ADDRESS_LIST"),
+            file_cfg.get("mikrotik_address_list"),
+            DEFAULTS.mikrotik_address_list,
+        ),
+        mikrotik_in_interface=_first(
+            args.mikrotik_in_interface,
+            _env_value(env, "MIKROTIK_IN_INTERFACE"),
+            _env_value(env, "STOPLIGA_MIKROTIK_IN_INTERFACE"),
+            file_cfg.get("mikrotik_in_interface"),
+            DEFAULTS.mikrotik_in_interface,
+        ),
+        mikrotik_in_interface_list=_first(
+            args.mikrotik_in_interface_list,
+            _env_value(env, "MIKROTIK_IN_INTERFACE_LIST"),
+            _env_value(env, "STOPLIGA_MIKROTIK_IN_INTERFACE_LIST"),
+            file_cfg.get("mikrotik_in_interface_list"),
+            DEFAULTS.mikrotik_in_interface_list,
         ),
         status_url=str(
             _first(
@@ -1063,6 +1192,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("max_destinations must be >= 1")
     if config.omada_group_size < 1:
         raise ConfigError("omada_group_size must be >= 1")
+    if config.mikrotik_route_distance < 1:
+        raise ConfigError("mikrotik_route_distance must be >= 1")
     if config.notification_retries < 1:
         raise ConfigError("notification_retries must be >= 1")
     if config.log_level not in VALID_LOG_LEVELS:
@@ -1105,6 +1236,19 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
             if not config.omada_target or not config.omada_target.strip():
                 raise ConfigError("omada mode requires STOPLIGA_OMADA_TARGET")
             _validate_api_base_url(config.omada_base_url or "", field_name="omada_base_url")
+    elif config.router_type == "mikrotik":
+        if validate_connection:
+            _validate_host(config.host or "", field_name="MIKROTIK_HOST")
+        if not config.mikrotik_routing_table or not config.mikrotik_routing_table.strip():
+            raise ConfigError("mikrotik mode requires MIKROTIK_ROUTING_TABLE or STOPLIGA_MIKROTIK_ROUTING_TABLE")
+        if not config.mikrotik_gateway or not config.mikrotik_gateway.strip():
+            raise ConfigError("mikrotik mode requires MIKROTIK_GATEWAY or STOPLIGA_MIKROTIK_GATEWAY")
+        if config.mikrotik_in_interface and config.mikrotik_in_interface_list:
+            raise ConfigError(
+                "Set either MIKROTIK_IN_INTERFACE or MIKROTIK_IN_INTERFACE_LIST (or STOPLIGA_MIKROTIK_*), not both"
+            )
+        if config.mikrotik_address_list is not None and not config.mikrotik_address_list.strip():
+            raise ConfigError("mikrotik_address_list must not be empty when set")
     elif validate_connection and config.router_type == "opnsense":
         _validate_host(config.opnsense_host or "", field_name="OPNSENSE_HOST")
     elif validate_connection:
@@ -1138,4 +1282,9 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
                 )
             if config.router_type == "opnsense":
                 raise ConfigError("opnsense mode requires OPNSENSE_HOST, OPNSENSE_API_KEY and OPNSENSE_API_SECRET")
+            if config.router_type == "mikrotik":
+                raise ConfigError(
+                    "mikrotik mode requires STOPLIGA_CONTROLLER_HOST (or MIKROTIK_HOST), "
+                    "MIKROTIK_USERNAME, MIKROTIK_PASSWORD, MIKROTIK_ROUTING_TABLE and MIKROTIK_GATEWAY"
+                )
             raise ConfigError("unifi mode requires STOPLIGA_CONTROLLER_HOST (or UNIFI_HOST) and UNIFI_API_KEY")

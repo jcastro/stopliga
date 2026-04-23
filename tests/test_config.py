@@ -299,6 +299,53 @@ api_key = "file-api-key"
                 },
             )
 
+    def test_mikrotik_mode_loads_required_settings(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "STOPLIGA_ROUTER_TYPE": "mikrotik",
+                "STOPLIGA_CONTROLLER_HOST": "router.example",
+                "STOPLIGA_CONTROLLER_PORT": "8443",
+                "STOPLIGA_CONTROLLER_VERIFY_TLS": "false",
+                "MIKROTIK_USERNAME": "admin",
+                "MIKROTIK_PASSWORD": "secret",
+                "MIKROTIK_ROUTING_TABLE": "vpn_stopliga",
+                "MIKROTIK_GATEWAY": "wireguard-out1",
+                "MIKROTIK_ADDRESS_LIST": "StopLigaList",
+                "MIKROTIK_IN_INTERFACE_LIST": "LAN",
+            },
+        )
+        self.assertEqual(config.router_type, "mikrotik")
+        self.assertEqual(config.host, "router.example")
+        self.assertEqual(config.port, 8443)
+        self.assertFalse(config.mikrotik_verify_tls)
+        self.assertEqual(config.mikrotik_username, "admin")
+        self.assertEqual(config.mikrotik_password, "secret")
+        self.assertEqual(config.mikrotik_routing_table, "vpn_stopliga")
+        self.assertEqual(config.mikrotik_gateway, "wireguard-out1")
+        self.assertEqual(config.mikrotik_address_list, "StopLigaList")
+        self.assertEqual(config.mikrotik_in_interface_list, "LAN")
+
+    def test_mikrotik_mode_rejects_conflicting_interface_matchers(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "STOPLIGA_ROUTER_TYPE": "mikrotik",
+                    "STOPLIGA_CONTROLLER_HOST": "router.example",
+                    "MIKROTIK_USERNAME": "admin",
+                    "MIKROTIK_PASSWORD": "secret",
+                    "MIKROTIK_ROUTING_TABLE": "vpn_stopliga",
+                    "MIKROTIK_GATEWAY": "wireguard-out1",
+                    "MIKROTIK_IN_INTERFACE": "bridge",
+                    "MIKROTIK_IN_INTERFACE_LIST": "LAN",
+                },
+            )
+
     def test_omada_route_name_length_is_validated(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])

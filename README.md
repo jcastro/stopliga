@@ -6,6 +6,7 @@ Supported routers:
 
 - `unifi`
 - `omada`
+- `mikrotik`
 - `opnsense`
 
 ## Quick Start
@@ -46,6 +47,13 @@ Most users only need `.env`.
 
 - updates a managed alias with the published IP list
 - enables or disables an existing firewall rule with description `StopLiga`
+
+### MikroTik
+
+- creates or reuses one managed firewall address-list
+- creates or reuses one managed routing table and default route
+- creates or reuses one managed `mangle` rule with `mark-routing`
+- enables or disables that rule from the live status
 
 ## Pick Your Router
 
@@ -118,6 +126,36 @@ STOPLIGA_RUN_MODE=loop
 STOPLIGA_SYNC_INTERVAL_SECONDS=300
 STOPLIGA_ROUTE_NAME=StopLiga
 ```
+
+### MikroTik
+
+You need:
+
+- a reachable RouterOS v7 router with REST enabled over `www-ssl`
+- a RouterOS user with permission to manage firewall and routing
+- an existing next hop, interface or VPN path that RouterOS can use as the gateway for the managed routing table
+
+Minimal `.env`:
+
+```dotenv
+STOPLIGA_BACKEND=mikrotik
+STOPLIGA_CONTROLLER_HOST=router.example
+STOPLIGA_CONTROLLER_PORT=443
+STOPLIGA_CONTROLLER_VERIFY_TLS=true
+MIKROTIK_USERNAME=admin
+MIKROTIK_PASSWORD=replace-me
+MIKROTIK_ROUTING_TABLE=vpn_stopliga
+MIKROTIK_GATEWAY=wireguard-out1
+MIKROTIK_ADDRESS_LIST=StopLigaList
+MIKROTIK_IN_INTERFACE_LIST=LAN
+STOPLIGA_RUN_MODE=loop
+STOPLIGA_SYNC_INTERVAL_SECONDS=300
+STOPLIGA_ROUTE_NAME=StopLiga
+```
+
+Important note:
+
+- RouterOS FastTrack only works in the main routing table. Traffic marked into the StopLiga routing table must be excluded from FastTrack.
 
 ## Files
 

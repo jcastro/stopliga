@@ -25,7 +25,9 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.14"
+DEFAULT_USER_AGENT = "stopliga/0.1.16"
+HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
+HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 
 
 @dataclass(frozen=True)
@@ -235,6 +237,18 @@ def _is_dns_no_records_error(exc: socket.gaierror) -> bool:
     return exc.errno in {value for value in no_record_errnos if value is not None}
 
 
+def _load_hayahora_canonical_status(config: Config) -> tuple[dict[str, Any], bool]:
+    raw_status_text = fetch_text(
+        HAYAHORA_STATUS_JSON_URL,
+        timeout=config.request_timeout,
+        retries=config.retries,
+        verify_tls=config.feed_verify_tls,
+        max_bytes=config.max_response_bytes,
+        ca_file=config.feed_ca_file,
+    )
+    return parse_status_payload(raw_status_text)
+
+
 def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
     """Resolve a DNS hostname into a deterministic list of IP addresses."""
 
@@ -292,6 +306,18 @@ def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
 def load_status_snapshot(config: Config) -> tuple[dict[str, Any], bool]:
     dns_host = _parse_dns_feed_host(config.status_url)
     if dns_host is not None:
+        if dns_host == HAYAHORA_DNS_STATUS_HOST:
+            try:
+                return _load_hayahora_canonical_status(config)
+            except (InvalidFeedError, NetworkError) as exc:
+                log_event(
+                    logging.getLogger("stopliga.feed"),
+                    logging.WARNING,
+                    "feed_canonical_status_fallback",
+                    dns_host=dns_host,
+                    canonical_url=HAYAHORA_STATUS_JSON_URL,
+                    error=exc,
+                )
         resolved_ips = resolve_dns_addresses(dns_host, retries=config.retries)
         is_blocked = bool(resolved_ips)
         return {

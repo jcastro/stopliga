@@ -15,7 +15,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from stopliga.errors import InvalidFeedError  # noqa: E402
+from stopliga.errors import InvalidFeedError, NetworkError  # noqa: E402
 from stopliga.feed import load_feed_snapshot, parse_ip_list, parse_status_payload, resolve_dns_addresses  # noqa: E402
 from stopliga.models import Config  # noqa: E402
 from stopliga.state import StateStore  # noqa: E402
@@ -147,6 +147,9 @@ class StateStoreTests(unittest.TestCase):
 
 
 class FeedLoadingTests(unittest.TestCase):
+    def test_default_status_url_uses_canonical_hayahora_json(self) -> None:
+        self.assertEqual(Config().status_url, "https://hayahora.futbol/estado/data.json")
+
     def test_load_feed_snapshot_pins_github_raw_urls_to_single_revision(self) -> None:
         config = Config(
             status_url="https://raw.githubusercontent.com/example/repo/main/status.json",
@@ -219,15 +222,33 @@ class FeedLoadingTests(unittest.TestCase):
         )
 
         with (
-            patch("stopliga.feed.resolve_dns_addresses", return_value=["104.21.0.97", "172.67.205.181"]) as dns_mock,
-            patch("stopliga.feed.fetch_text", return_value="192.0.2.1\n"),
+            patch(
+                "stopliga.feed.fetch_text",
+                side_effect=[
+                    """
+                    {
+                      "lastUpdate": "2026-04-23 09:16:40",
+                      "data": [
+                        {
+                          "ip": "104.21.0.97",
+                          "stateChanges": [
+                            {"timestamp": "2026-04-23 09:00:00Z", "state": true}
+                          ]
+                        }
+                      ]
+                    }
+                    """,
+                    "192.0.2.1\n",
+                ],
+            ),
+            patch("stopliga.feed.resolve_dns_addresses") as dns_mock,
         ):
             snapshot = load_feed_snapshot(config)
 
         self.assertTrue(snapshot.is_blocked)
         self.assertEqual(snapshot.destinations, ["192.0.2.1"])
-        self.assertEqual(snapshot.raw_status["source"], "dns")
-        dns_mock.assert_called_once_with("blocked.dns.hayahora.futbol", retries=1)
+        self.assertEqual(snapshot.raw_status["source"], "hayahora-history-json")
+        dns_mock.assert_not_called()
 
     def test_load_feed_snapshot_treats_empty_dns_status_as_not_blocked(self) -> None:
         config = Config(
@@ -237,15 +258,50 @@ class FeedLoadingTests(unittest.TestCase):
         )
 
         with (
-            patch("stopliga.feed.resolve_dns_addresses", return_value=[]) as dns_mock,
-            patch("stopliga.feed.fetch_text", return_value="192.0.2.1\n"),
+            patch(
+                "stopliga.feed.fetch_text",
+                side_effect=[
+                    """
+                    {
+                      "lastUpdate": "2026-04-23 09:16:40",
+                      "data": []
+                    }
+                    """,
+                    "192.0.2.1\n",
+                ],
+            ),
+            patch("stopliga.feed.resolve_dns_addresses") as dns_mock,
         ):
             snapshot = load_feed_snapshot(config)
 
         self.assertFalse(snapshot.is_blocked)
         self.assertEqual(snapshot.destinations, ["192.0.2.1"])
+        self.assertEqual(snapshot.raw_status["source"], "hayahora-history-json")
+        self.assertEqual(snapshot.raw_status["activeIpCount"], 0)
+        dns_mock.assert_not_called()
+
+    def test_load_feed_snapshot_falls_back_to_dns_when_canonical_hayahora_json_fails(self) -> None:
+        config = Config(
+            status_url="dns://blocked.dns.hayahora.futbol",
+            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
+            retries=1,
+        )
+
+        def fake_fetch(url: str, **_: object) -> str:
+            if url == "https://hayahora.futbol/estado/data.json":
+                raise NetworkError("hayahora json unavailable")
+            if url == "https://raw.githubusercontent.com/example/repo/main/ip_list.txt":
+                return "192.0.2.1\n"
+            raise AssertionError(f"unexpected url: {url}")
+
+        with (
+            patch("stopliga.feed.fetch_text", side_effect=fake_fetch),
+            patch("stopliga.feed.resolve_dns_addresses", return_value=["104.21.0.97"]) as dns_mock,
+        ):
+            snapshot = load_feed_snapshot(config)
+
+        self.assertTrue(snapshot.is_blocked)
         self.assertEqual(snapshot.raw_status["source"], "dns")
-        self.assertEqual(snapshot.raw_status["recordCount"], 0)
         dns_mock.assert_called_once_with("blocked.dns.hayahora.futbol", retries=1)
 
     def test_resolve_dns_addresses_returns_empty_list_when_dns_has_no_records(self) -> None:

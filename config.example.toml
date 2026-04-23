@@ -21,7 +21,7 @@ log_level = "INFO"
 dry_run = false
 
 [feeds]
-status_url = "dns://blocked.dns.hayahora.futbol"
+status_url = "https://hayahora.futbol/estado/data.json"
 ip_list_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
 verify_tls = true
 

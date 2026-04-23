@@ -2,6 +2,8 @@
 
 StopLiga reads the public block status from [`hayahora.futbol`](https://hayahora.futbol/) and keeps one managed route or rule called `StopLiga` in sync.
 
+By default it uses Hayahora's canonical JSON status feed, which avoids false positives from stale recursive DNS caches. The `dns://blocked.dns.hayahora.futbol` feed is still supported as an advanced override.
+
 Supported routers:
 
 - `unifi`
@@ -177,7 +179,7 @@ docker run -d \
   --env-file .env \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/config:/config:ro" \
-  ghcr.io/jcastro/stopliga:0.1.15
+  ghcr.io/jcastro/stopliga:0.1.16
 ```
 
 The `/config` mount is optional.
@@ -254,7 +256,8 @@ For branch-level validation of the in-progress router backends (`FRITZ!Box`, `Ke
 
 ## Sources
 
-- Live block status: [`blocked.dns.hayahora.futbol`](https://hayahora.futbol/)
+- Live block status JSON: [`hayahora.futbol/estado/data.json`](https://hayahora.futbol/estado/data.json)
+- Live block status DNS alternative: [`blocked.dns.hayahora.futbol`](https://hayahora.futbol/)
 - Destination IP list: [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list)
 
 ## Extensibility

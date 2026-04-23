@@ -35,7 +35,7 @@ class Config:
     omada_verify_tls: bool = True
     omada_ca_file: Path | None = None
     omada_group_size: int = 16
-    status_url: str = "dns://blocked.dns.hayahora.futbol"
+    status_url: str = "https://hayahora.futbol/estado/data.json"
     ip_list_url: str = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
     unifi_verify_tls: bool = True
     unifi_ca_file: Path | None = None

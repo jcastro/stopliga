@@ -44,6 +44,8 @@ def _event_message(event: str | None, fields: dict[str, Any]) -> str | None:
         return "Starting sync"
     if event == "feed_check":
         return "Checking blocking status and IP list"
+    if event == "feed_canonical_status_fallback":
+        return "Canonical Hayahora status feed unavailable, falling back to DNS"
     if event == "feed_revision_resolved":
         return "Pinned feed to a single GitHub revision"
     if event == "feed_loaded":

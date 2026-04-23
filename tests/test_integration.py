@@ -1649,6 +1649,28 @@ class OPNsenseTests(unittest.TestCase):
         toggle_rule.assert_called_once_with("rule-1", True)
         apply_filter.assert_called_once_with()
 
+    def test_sync_opnsense_reports_rules_new_requirement_when_rule_is_missing(self) -> None:
+        config = self.make_opnsense_config(route_name="StopLiga")
+        feed_snapshot = self.make_feed_snapshot()
+        alias_record = {
+            "content": {
+                "192.0.2.10": {"value": "192.0.2.10", "selected": 1},
+                "198.51.100.0/24": {"value": "198.51.100.0/24", "selected": 1},
+            }
+        }
+
+        with (
+            patch("stopliga.opnsense.OPNsenseClient.authenticate", return_value=None),
+            patch("stopliga.opnsense.OPNsenseClient.search_alias", return_value={"uuid": "alias-1"}),
+            patch("stopliga.opnsense.OPNsenseClient.get_alias_item", return_value=alias_record),
+            patch("stopliga.opnsense.OPNsenseClient.search_rule", return_value=None),
+        ):
+            with self.assertRaises(DiscoveryError) as ctx:
+                sync_opnsense(config, feed_snapshot)
+
+        self.assertIn("Firewall > Rules [new]", str(ctx.exception))
+        self.assertIn("Firewall > Automation > Filter", str(ctx.exception))
+
     def test_service_dispatches_to_opnsense_driver(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = self.make_opnsense_config(

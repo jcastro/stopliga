@@ -320,7 +320,8 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
     if rule_record is None:
         raise DiscoveryError(
             f"Firewall rule {rule_description!r} not found in OPNsense. "
-            "Create a rule with that exact description and restart StopLiga."
+            "Create it in Firewall > Rules [new] (or Firewall > Automation > Filter) "
+            "with that exact description, then restart StopLiga."
         )
     rule_uuid = str(rule_record.get("uuid", "")).strip()
     if not rule_uuid:

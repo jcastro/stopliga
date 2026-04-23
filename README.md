@@ -115,7 +115,13 @@ You need:
 
 - a reachable OPNsense firewall
 - an API key and API secret
-- one firewall rule created once with description `StopLiga`
+- one firewall rule created once in `Firewall > Rules [new]` or `Firewall > Automation > Filter`
+- that rule must use the exact description `StopLiga`
+
+Important notes:
+
+- StopLiga uses the OPNsense filter API to find and toggle that rule
+- a rule created only in the legacy `Firewall > Rules` view may be visible in the UI but not discoverable through the API StopLiga uses
 
 Minimal `.env`:
 

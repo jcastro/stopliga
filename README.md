@@ -6,6 +6,7 @@ Supported routers:
 
 - `unifi`
 - `omada`
+- `fritzbox`
 - `opnsense`
 
 ## Quick Start
@@ -46,6 +47,13 @@ Most users only need `.env`.
 
 - updates a managed alias with the published IP list
 - enables or disables an existing firewall rule with description `StopLiga`
+
+### FRITZ!Box
+
+- discovers the TR-064 `Layer3Forwarding` service from `tr64desc.xml`
+- reconciles one managed set of static destination routes
+- enables or disables that managed route set from the live status
+- collapses raw destinations into aggregated IPv4 CIDRs before writing routes
 
 ## Pick Your Router
 
@@ -118,6 +126,37 @@ STOPLIGA_RUN_MODE=loop
 STOPLIGA_SYNC_INTERVAL_SECONDS=300
 STOPLIGA_ROUTE_NAME=StopLiga
 ```
+
+### FRITZ!Box
+
+You need:
+
+- a reachable FRITZ!Box with TR-064 enabled
+- a FRITZ! user with configuration rights
+- a known next-hop gateway for the alternate path
+- a dedicated route metric reserved for StopLiga, so managed routes can be identified safely
+
+Minimal `.env`:
+
+```dotenv
+STOPLIGA_BACKEND=fritzbox
+STOPLIGA_CONTROLLER_HOST=fritz.box
+STOPLIGA_CONTROLLER_PORT=49443
+STOPLIGA_CONTROLLER_VERIFY_TLS=true
+FRITZBOX_USERNAME=stopliga
+FRITZBOX_PASSWORD=replace-me
+FRITZBOX_GATEWAY=192.168.178.2
+FRITZBOX_ROUTE_METRIC=4096
+STOPLIGA_RUN_MODE=loop
+STOPLIGA_SYNC_INTERVAL_SECONDS=300
+STOPLIGA_ROUTE_NAME=StopLiga
+```
+
+Important notes:
+
+- the backend uses official TR-064 `Layer3Forwarding`, not UI scraping
+- it currently manages IPv4 static routes only
+- choose a unique `FRITZBOX_ROUTE_METRIC`, because TR-064 routes do not have comments or labels
 
 ## Files
 

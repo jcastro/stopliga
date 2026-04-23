@@ -223,16 +223,17 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
     controller = raw.get("controller", {})
     unifi = raw.get("unifi", {})
     omada = raw.get("omada", {})
+    fritzbox = raw.get("fritzbox", {})
     opnsense = raw.get("opnsense", {})
     feeds = raw.get("feeds", {})
     bootstrap = raw.get("bootstrap", {})
     notifications = raw.get("notifications", {})
     if not all(
         isinstance(section, dict)
-        for section in (app, controller, unifi, omada, opnsense, feeds, bootstrap, notifications)
+        for section in (app, controller, unifi, omada, fritzbox, opnsense, feeds, bootstrap, notifications)
     ):
         raise ConfigError(
-            "Config sections app/controller/unifi/omada/opnsense/feeds/bootstrap/notifications must be TOML tables"
+            "Config sections app/controller/unifi/omada/fritzbox/opnsense/feeds/bootstrap/notifications must be TOML tables"
         )
 
     return {
@@ -265,6 +266,14 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "omada_verify_tls": omada.get("verify_tls"),
         "omada_ca_file": omada.get("ca_file"),
         "omada_group_size": omada.get("group_size"),
+        "fritzbox_host": fritzbox.get("host"),
+        "fritzbox_port": fritzbox.get("port"),
+        "fritzbox_username": fritzbox.get("username"),
+        "fritzbox_password": fritzbox.get("password"),
+        "fritzbox_verify_tls": fritzbox.get("verify_tls"),
+        "fritzbox_ca_file": fritzbox.get("ca_file"),
+        "fritzbox_gateway": fritzbox.get("gateway"),
+        "fritzbox_route_metric": fritzbox.get("route_metric"),
         "status_url": feeds.get("status_url"),
         "ip_list_url": feeds.get("ip_list_url"),
         "unifi_verify_tls": unifi.get("verify_tls"),
@@ -339,12 +348,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--omada-group-size", type=int, default=None, help="Maximum IPv4 subnets per managed Omada IP Group"
     )
+    parser.add_argument("--fritzbox-username", default=None, help="FRITZ!Box TR-064 username")
+    parser.add_argument("--fritzbox-password", default=None, help="FRITZ!Box TR-064 password")
+    parser.add_argument("--fritzbox-gateway", default=None, help="Next-hop gateway for managed FRITZ!Box routes")
+    parser.add_argument(
+        "--fritzbox-route-metric", type=int, default=None, help="Metric used for managed FRITZ!Box routes"
+    )
     parser.add_argument("--status-url", default=None, help="Status feed URL (http/https or dns://hostname)")
     parser.add_argument("--ip-list-url", default=None, help="IP list TXT URL")
     parser.add_argument("--state-file", default=None, help="State file path")
     parser.add_argument("--lock-file", default=None, help="Lock file path")
     parser.add_argument("--ca-file", dest="unifi_ca_file", default=None, help="CA bundle for UniFi TLS")
     parser.add_argument("--omada-ca-file", default=None, help="CA bundle for Omada TLS")
+    parser.add_argument("--fritzbox-ca-file", default=None, help="CA bundle for FRITZ!Box TLS")
     parser.add_argument("--vpn-name", default=None, help="Exact VPN client network name for automatic route creation")
     parser.add_argument(
         "--targets", default=None, help="Comma-separated client names or MACs for automatic route creation"
@@ -591,6 +607,36 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         _env_value(env, "STOPLIGA_OMADA_CA_FILE"),
         file_cfg.get("omada_ca_file"),
     )
+    fritzbox_host = _first(
+        args.host,
+        controller_host,
+        _env_value(env, "FRITZBOX_HOST"),
+        _env_value(env, "STOPLIGA_FRITZBOX_HOST"),
+        file_cfg.get("fritzbox_host"),
+        DEFAULTS.host,
+    )
+    fritzbox_port = _first(
+        args.port,
+        controller_port,
+        _env_value(env, "FRITZBOX_PORT"),
+        _env_value(env, "STOPLIGA_FRITZBOX_PORT"),
+        file_cfg.get("fritzbox_port"),
+        DEFAULTS.port,
+    )
+    fritzbox_verify_tls = _first(
+        controller_verify_tls,
+        _env_value(env, "FRITZBOX_VERIFY_TLS"),
+        _env_value(env, "STOPLIGA_FRITZBOX_VERIFY_TLS"),
+        file_cfg.get("fritzbox_verify_tls"),
+        DEFAULTS.fritzbox_verify_tls,
+    )
+    fritzbox_ca_file = _first(
+        args.fritzbox_ca_file,
+        controller_ca_file,
+        _env_value(env, "FRITZBOX_CA_FILE"),
+        _env_value(env, "STOPLIGA_FRITZBOX_CA_FILE"),
+        file_cfg.get("fritzbox_ca_file"),
+    )
 
     log_level = (
         "DEBUG"
@@ -614,8 +660,8 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
                 DEFAULTS.firewall_backend,
             ),
         ),
-        host=cast(str | None, unifi_host),
-        port=_parse_int(unifi_port, field_name="port"),
+        host=cast(str | None, fritzbox_host if router_type == "fritzbox" else unifi_host),
+        port=_parse_int(fritzbox_port if router_type == "fritzbox" else unifi_port, field_name="port"),
         api_key=_first(
             args.api_key,
             _env_secret_first(
@@ -715,6 +761,49 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
                 DEFAULTS.omada_group_size,
             ),
             field_name="omada_group_size",
+        ),
+        fritzbox_username=_first(
+            args.fritzbox_username,
+            _env_value(env, "FRITZBOX_USERNAME"),
+            _env_value(env, "STOPLIGA_FRITZBOX_USERNAME"),
+            file_cfg.get("fritzbox_username"),
+            DEFAULTS.fritzbox_username,
+        ),
+        fritzbox_password=_first(
+            args.fritzbox_password,
+            _env_secret_first(
+                env,
+                field_name="fritzbox_password",
+                key="FRITZBOX_PASSWORD",
+                key_file="FRITZBOX_PASSWORD_FILE",
+            ),
+            _env_secret_first(
+                env,
+                field_name="fritzbox_password",
+                key="STOPLIGA_FRITZBOX_PASSWORD",
+                key_file="STOPLIGA_FRITZBOX_PASSWORD_FILE",
+            ),
+            file_cfg.get("fritzbox_password"),
+            DEFAULTS.fritzbox_password,
+        ),
+        fritzbox_verify_tls=_parse_bool(fritzbox_verify_tls, field_name="fritzbox_verify_tls"),
+        fritzbox_ca_file=_parse_path(value, field_name="fritzbox_ca_file") if (value := fritzbox_ca_file) else None,
+        fritzbox_gateway=_first(
+            args.fritzbox_gateway,
+            _env_value(env, "FRITZBOX_GATEWAY"),
+            _env_value(env, "STOPLIGA_FRITZBOX_GATEWAY"),
+            file_cfg.get("fritzbox_gateway"),
+            DEFAULTS.fritzbox_gateway,
+        ),
+        fritzbox_route_metric=_parse_int(
+            _first(
+                args.fritzbox_route_metric,
+                _env_value(env, "FRITZBOX_ROUTE_METRIC"),
+                _env_value(env, "STOPLIGA_FRITZBOX_ROUTE_METRIC"),
+                file_cfg.get("fritzbox_route_metric"),
+                DEFAULTS.fritzbox_route_metric,
+            ),
+            field_name="fritzbox_route_metric",
         ),
         status_url=str(
             _first(
@@ -1063,6 +1152,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("max_destinations must be >= 1")
     if config.omada_group_size < 1:
         raise ConfigError("omada_group_size must be >= 1")
+    if config.fritzbox_route_metric < 1:
+        raise ConfigError("fritzbox_route_metric must be >= 1")
     if config.notification_retries < 1:
         raise ConfigError("notification_retries must be >= 1")
     if config.log_level not in VALID_LOG_LEVELS:
@@ -1105,6 +1196,11 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
             if not config.omada_target or not config.omada_target.strip():
                 raise ConfigError("omada mode requires STOPLIGA_OMADA_TARGET")
             _validate_api_base_url(config.omada_base_url or "", field_name="omada_base_url")
+    elif config.router_type == "fritzbox":
+        if validate_connection:
+            _validate_host(config.host or "", field_name="FRITZBOX_HOST")
+        if not config.fritzbox_gateway or not config.fritzbox_gateway.strip():
+            raise ConfigError("fritzbox mode requires FRITZBOX_GATEWAY or STOPLIGA_FRITZBOX_GATEWAY")
     elif validate_connection and config.router_type == "opnsense":
         _validate_host(config.opnsense_host or "", field_name="OPNSENSE_HOST")
     elif validate_connection:
@@ -1138,4 +1234,9 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
                 )
             if config.router_type == "opnsense":
                 raise ConfigError("opnsense mode requires OPNSENSE_HOST, OPNSENSE_API_KEY and OPNSENSE_API_SECRET")
+            if config.router_type == "fritzbox":
+                raise ConfigError(
+                    "fritzbox mode requires STOPLIGA_CONTROLLER_HOST (or FRITZBOX_HOST), "
+                    "FRITZBOX_USERNAME, FRITZBOX_PASSWORD and FRITZBOX_GATEWAY"
+                )
             raise ConfigError("unifi mode requires STOPLIGA_CONTROLLER_HOST (or UNIFI_HOST) and UNIFI_API_KEY")

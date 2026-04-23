@@ -4,7 +4,7 @@
 # If you do use it, keep secrets in .env and non-secret settings here.
 
 [app]
-# Router to use: unifi, omada, opnsense
+# Router to use: unifi, omada, fritzbox, opnsense
 backend = "unifi"
 
 # Normal Docker use should stay in loop mode.
@@ -26,7 +26,7 @@ ip_list_url = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/lalig
 verify_tls = true
 
 [controller]
-# Use this section for UniFi or Omada.
+# Use this section for UniFi, Omada or FRITZ!Box.
 host = "10.0.1.1"
 port = 443
 site = "default"
@@ -46,6 +46,14 @@ verify_tls = false
 # target = "WG Main"
 # source_networks = ["LAN", "IoT"]
 # group_size = 16
+# verify_tls = true
+
+[fritzbox]
+# Uncomment and fill these if backend = "fritzbox".
+# username = "stopliga"
+# password = "replace-me"
+# gateway = "192.168.178.2"
+# route_metric = 4096
 # verify_tls = true
 
 [opnsense]

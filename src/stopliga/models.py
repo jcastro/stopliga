@@ -10,7 +10,7 @@ from typing import Any, Literal
 RunMode = Literal["once", "loop"]
 InvalidEntryPolicy = Literal["fail", "ignore"]
 LegacyFirewallBackend = Literal["unifi", "opnsense"]
-RouterType = Literal["unifi", "omada", "opnsense"]
+RouterType = Literal["unifi", "omada", "opnsense", "fritzbox"]
 OmadaTargetType = Literal["wan", "vpn"]
 
 
@@ -35,6 +35,12 @@ class Config:
     omada_verify_tls: bool = True
     omada_ca_file: Path | None = None
     omada_group_size: int = 16
+    fritzbox_username: str | None = None
+    fritzbox_password: str | None = None
+    fritzbox_verify_tls: bool = True
+    fritzbox_ca_file: Path | None = None
+    fritzbox_gateway: str | None = None
+    fritzbox_route_metric: int = 2048
     status_url: str = "dns://blocked.dns.hayahora.futbol"
     ip_list_url: str = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
     unifi_verify_tls: bool = True
@@ -107,6 +113,8 @@ class Config:
                 and self.omada_target_type
                 and self.omada_target
             )
+        if self.router_type == "fritzbox":
+            return bool(self.host and self.fritzbox_username and self.fritzbox_password and self.fritzbox_gateway)
         if self.router_type == "opnsense":
             return bool(self.opnsense_host and self.opnsense_api_key and self.opnsense_api_secret)
         return False

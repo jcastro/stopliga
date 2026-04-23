@@ -299,6 +299,45 @@ api_key = "file-api-key"
                 },
             )
 
+    def test_fritzbox_mode_loads_required_settings(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "STOPLIGA_ROUTER_TYPE": "fritzbox",
+                "STOPLIGA_CONTROLLER_HOST": "fritz.example",
+                "STOPLIGA_CONTROLLER_PORT": "49443",
+                "STOPLIGA_CONTROLLER_VERIFY_TLS": "false",
+                "FRITZBOX_USERNAME": "stopliga",
+                "FRITZBOX_PASSWORD": "secret",
+                "FRITZBOX_GATEWAY": "192.168.178.2",
+                "FRITZBOX_ROUTE_METRIC": "4096",
+            },
+        )
+        self.assertEqual(config.router_type, "fritzbox")
+        self.assertEqual(config.host, "fritz.example")
+        self.assertEqual(config.port, 49443)
+        self.assertEqual(config.fritzbox_username, "stopliga")
+        self.assertEqual(config.fritzbox_password, "secret")
+        self.assertEqual(config.fritzbox_gateway, "192.168.178.2")
+        self.assertEqual(config.fritzbox_route_metric, 4096)
+        self.assertFalse(config.fritzbox_verify_tls)
+
+    def test_fritzbox_mode_requires_gateway(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "STOPLIGA_ROUTER_TYPE": "fritzbox",
+                    "STOPLIGA_CONTROLLER_HOST": "fritz.example",
+                    "FRITZBOX_USERNAME": "stopliga",
+                    "FRITZBOX_PASSWORD": "secret",
+                },
+            )
+
     def test_omada_route_name_length_is_validated(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])

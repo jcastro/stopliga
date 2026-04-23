@@ -25,9 +25,12 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.16"
+DEFAULT_USER_AGENT = "stopliga/0.1.17"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
+# Hayahora's canonical JSON feed is historical and keeps growing over time,
+# so keep a larger ceiling here than the generic response limit.
+HAYAHORA_STATUS_MAX_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -243,7 +246,7 @@ def _load_hayahora_canonical_status(config: Config) -> tuple[dict[str, Any], boo
         timeout=config.request_timeout,
         retries=config.retries,
         verify_tls=config.feed_verify_tls,
-        max_bytes=config.max_response_bytes,
+        max_bytes=max(config.max_response_bytes, HAYAHORA_STATUS_MAX_BYTES),
         ca_file=config.feed_ca_file,
     )
     return parse_status_payload(raw_status_text)

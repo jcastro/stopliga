@@ -16,7 +16,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from stopliga.errors import InvalidFeedError, NetworkError  # noqa: E402
-from stopliga.feed import load_feed_snapshot, parse_ip_list, parse_status_payload, resolve_dns_addresses  # noqa: E402
+from stopliga.feed import (
+    load_feed_snapshot,
+    load_status_snapshot,
+    parse_ip_list,
+    parse_status_payload,
+    resolve_dns_addresses,
+)  # noqa: E402
 from stopliga.models import Config  # noqa: E402
 from stopliga.state import StateStore  # noqa: E402
 from stopliga.unifi import build_ip_objects, build_route_update_template  # noqa: E402
@@ -303,6 +309,32 @@ class FeedLoadingTests(unittest.TestCase):
         self.assertTrue(snapshot.is_blocked)
         self.assertEqual(snapshot.raw_status["source"], "dns")
         dns_mock.assert_called_once_with("blocked.dns.hayahora.futbol", retries=1)
+
+    def test_load_status_snapshot_uses_larger_limit_for_canonical_hayahora_json(self) -> None:
+        config = Config(
+            status_url="dns://blocked.dns.hayahora.futbol",
+            max_response_bytes=1024,
+            retries=1,
+        )
+        fetch_calls: list[dict[str, object]] = []
+
+        def fake_fetch(url: str, **kwargs: object) -> str:
+            fetch_calls.append({"url": url, **kwargs})
+            return """
+            {
+              "lastUpdate": "2026-04-23 09:16:40",
+              "data": []
+            }
+            """
+
+        with patch("stopliga.feed.fetch_text", side_effect=fake_fetch):
+            raw_status, is_blocked = load_status_snapshot(config)
+
+        self.assertFalse(is_blocked)
+        self.assertEqual(raw_status["source"], "hayahora-history-json")
+        self.assertEqual(len(fetch_calls), 1)
+        self.assertEqual(fetch_calls[0]["url"], "https://hayahora.futbol/estado/data.json")
+        self.assertEqual(fetch_calls[0]["max_bytes"], 16 * 1024 * 1024)
 
     def test_resolve_dns_addresses_returns_empty_list_when_dns_has_no_records(self) -> None:
         no_record_errno = getattr(socket, "EAI_NONAME", 8)

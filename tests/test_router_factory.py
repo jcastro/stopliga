@@ -14,6 +14,7 @@ if str(SRC) not in sys.path:
 from stopliga.errors import ConfigError  # noqa: E402
 from stopliga.models import Config  # noqa: E402
 from stopliga.routers.factory import create_router_driver  # noqa: E402
+from stopliga.routers.keenetic import KeeneticRouterDriver  # noqa: E402
 from stopliga.routers.omada import OmadaRouterDriver  # noqa: E402
 from stopliga.routers.opnsense import OPNsenseRouterDriver  # noqa: E402
 from stopliga.routers.unifi import UniFiRouterDriver  # noqa: E402
@@ -27,6 +28,10 @@ class RouterFactoryTests(unittest.TestCase):
     def test_factory_creates_omada_driver(self) -> None:
         driver = create_router_driver(Config(router_type="omada"))  # type: ignore[arg-type]
         self.assertIsInstance(driver, OmadaRouterDriver)
+
+    def test_factory_creates_keenetic_driver(self) -> None:
+        driver = create_router_driver(Config(router_type="keenetic"))  # type: ignore[arg-type]
+        self.assertIsInstance(driver, KeeneticRouterDriver)
 
     def test_factory_creates_opnsense_driver(self) -> None:
         driver = create_router_driver(Config(router_type="opnsense"))  # type: ignore[arg-type]

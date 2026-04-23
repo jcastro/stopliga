@@ -6,6 +6,7 @@ Supported routers:
 
 - `unifi`
 - `omada`
+- `keenetic`
 - `opnsense`
 
 ## Quick Start
@@ -46,6 +47,13 @@ Most users only need `.env`.
 
 - updates a managed alias with the published IP list
 - enables or disables an existing firewall rule with description `StopLiga`
+
+### Keenetic
+
+- manages one reconciled set of static IPv4 routes through the official `/rci` API
+- collapses raw destinations into aggregated CIDRs before writing routes
+- creates routes when blocking is active and removes them when blocking ends
+- targets current KeeneticOS with the documented `ip route` command surface
 
 ## Pick Your Router
 
@@ -118,6 +126,35 @@ STOPLIGA_RUN_MODE=loop
 STOPLIGA_SYNC_INTERVAL_SECONDS=300
 STOPLIGA_ROUTE_NAME=StopLiga
 ```
+
+### Keenetic
+
+You need:
+
+- a reachable Keenetic router with HTTP API access to `/rci`
+- a user that can change routing settings
+- an existing interface or path that should carry the managed routes
+
+Minimal `.env`:
+
+```dotenv
+STOPLIGA_BACKEND=keenetic
+STOPLIGA_KEENETIC_BASE_URL=http://192.168.1.1
+KEENETIC_USERNAME=admin
+KEENETIC_PASSWORD=replace-me
+KEENETIC_INTERFACE=Wireguard1
+KEENETIC_GATEWAY=10.10.10.1
+KEENETIC_AUTO=true
+KEENETIC_REJECT=true
+STOPLIGA_RUN_MODE=loop
+STOPLIGA_SYNC_INTERVAL_SECONDS=300
+STOPLIGA_ROUTE_NAME=StopLiga
+```
+
+Important notes:
+
+- this branch currently uses the well-documented static-route backend via `/rci/ip/route`
+- KeeneticOS 5 `DNS-based routes + object groups` still looks like the better long-term fit, but the public API surface for that flow remains less explicit than the static-route path
 
 ## Files
 

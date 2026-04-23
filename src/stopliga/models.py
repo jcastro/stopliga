@@ -10,7 +10,7 @@ from typing import Any, Literal
 RunMode = Literal["once", "loop"]
 InvalidEntryPolicy = Literal["fail", "ignore"]
 LegacyFirewallBackend = Literal["unifi", "opnsense"]
-RouterType = Literal["unifi", "omada", "opnsense"]
+RouterType = Literal["unifi", "omada", "opnsense", "keenetic"]
 OmadaTargetType = Literal["wan", "vpn"]
 
 
@@ -35,6 +35,15 @@ class Config:
     omada_verify_tls: bool = True
     omada_ca_file: Path | None = None
     omada_group_size: int = 16
+    keenetic_base_url: str | None = None
+    keenetic_username: str | None = None
+    keenetic_password: str | None = None
+    keenetic_verify_tls: bool = True
+    keenetic_ca_file: Path | None = None
+    keenetic_interface: str | None = None
+    keenetic_gateway: str | None = None
+    keenetic_auto: bool = True
+    keenetic_reject: bool = True
     status_url: str = "dns://blocked.dns.hayahora.futbol"
     ip_list_url: str = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
     unifi_verify_tls: bool = True
@@ -106,6 +115,10 @@ class Config:
                 and self.omada_omadac_id
                 and self.omada_target_type
                 and self.omada_target
+            )
+        if self.router_type == "keenetic":
+            return bool(
+                self.keenetic_base_url and self.keenetic_username and self.keenetic_password and self.keenetic_interface
             )
         if self.router_type == "opnsense":
             return bool(self.opnsense_host and self.opnsense_api_key and self.opnsense_api_secret)

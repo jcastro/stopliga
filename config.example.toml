@@ -4,7 +4,7 @@
 # If you do use it, keep secrets in .env and non-secret settings here.
 
 [app]
-# Router to use: unifi, omada, opnsense
+# Router to use: unifi, omada, keenetic, opnsense
 backend = "unifi"
 
 # Normal Docker use should stay in loop mode.
@@ -47,6 +47,16 @@ verify_tls = false
 # source_networks = ["LAN", "IoT"]
 # group_size = 16
 # verify_tls = true
+
+[keenetic]
+# Uncomment and fill these if backend = "keenetic".
+# base_url = "http://192.168.1.1"
+# username = "admin"
+# password = "replace-me"
+# interface = "Wireguard1"
+# gateway = "10.10.10.1"
+# auto = true
+# reject = true
 
 [opnsense]
 # Uncomment and fill these if backend = "opnsense".

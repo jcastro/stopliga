@@ -299,6 +299,48 @@ api_key = "file-api-key"
                 },
             )
 
+    def test_keenetic_mode_loads_required_settings(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "STOPLIGA_ROUTER_TYPE": "keenetic",
+                "STOPLIGA_KEENETIC_BASE_URL": "http://router.keenetic.local",
+                "KEENETIC_USERNAME": "admin",
+                "KEENETIC_PASSWORD": "secret",
+                "KEENETIC_INTERFACE": "Wireguard1",
+                "KEENETIC_GATEWAY": "10.10.10.1",
+                "KEENETIC_AUTO": "true",
+                "KEENETIC_REJECT": "true",
+            },
+        )
+        self.assertEqual(config.router_type, "keenetic")
+        self.assertEqual(config.keenetic_base_url, "http://router.keenetic.local")
+        self.assertEqual(config.keenetic_username, "admin")
+        self.assertEqual(config.keenetic_password, "secret")
+        self.assertEqual(config.keenetic_interface, "Wireguard1")
+        self.assertEqual(config.keenetic_gateway, "10.10.10.1")
+        self.assertTrue(config.keenetic_auto)
+        self.assertTrue(config.keenetic_reject)
+
+    def test_keenetic_reject_requires_auto(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "STOPLIGA_ROUTER_TYPE": "keenetic",
+                    "STOPLIGA_KEENETIC_BASE_URL": "http://router.keenetic.local",
+                    "KEENETIC_USERNAME": "admin",
+                    "KEENETIC_PASSWORD": "secret",
+                    "KEENETIC_INTERFACE": "Wireguard1",
+                    "KEENETIC_AUTO": "false",
+                    "KEENETIC_REJECT": "true",
+                },
+            )
+
     def test_omada_route_name_length_is_validated(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])

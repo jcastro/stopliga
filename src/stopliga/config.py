@@ -223,16 +223,17 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
     controller = raw.get("controller", {})
     unifi = raw.get("unifi", {})
     omada = raw.get("omada", {})
+    keenetic = raw.get("keenetic", {})
     opnsense = raw.get("opnsense", {})
     feeds = raw.get("feeds", {})
     bootstrap = raw.get("bootstrap", {})
     notifications = raw.get("notifications", {})
     if not all(
         isinstance(section, dict)
-        for section in (app, controller, unifi, omada, opnsense, feeds, bootstrap, notifications)
+        for section in (app, controller, unifi, omada, keenetic, opnsense, feeds, bootstrap, notifications)
     ):
         raise ConfigError(
-            "Config sections app/controller/unifi/omada/opnsense/feeds/bootstrap/notifications must be TOML tables"
+            "Config sections app/controller/unifi/omada/keenetic/opnsense/feeds/bootstrap/notifications must be TOML tables"
         )
 
     return {
@@ -265,6 +266,15 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "omada_verify_tls": omada.get("verify_tls"),
         "omada_ca_file": omada.get("ca_file"),
         "omada_group_size": omada.get("group_size"),
+        "keenetic_base_url": keenetic.get("base_url"),
+        "keenetic_username": keenetic.get("username"),
+        "keenetic_password": keenetic.get("password"),
+        "keenetic_verify_tls": keenetic.get("verify_tls"),
+        "keenetic_ca_file": keenetic.get("ca_file"),
+        "keenetic_interface": keenetic.get("interface"),
+        "keenetic_gateway": keenetic.get("gateway"),
+        "keenetic_auto": keenetic.get("auto"),
+        "keenetic_reject": keenetic.get("reject"),
         "status_url": feeds.get("status_url"),
         "ip_list_url": feeds.get("ip_list_url"),
         "unifi_verify_tls": unifi.get("verify_tls"),
@@ -339,12 +349,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--omada-group-size", type=int, default=None, help="Maximum IPv4 subnets per managed Omada IP Group"
     )
+    parser.add_argument(
+        "--keenetic-base-url", default=None, help="Keenetic RCI base URL, for example http://192.168.1.1"
+    )
+    parser.add_argument("--keenetic-username", default=None, help="Keenetic username")
+    parser.add_argument("--keenetic-password", default=None, help="Keenetic password")
+    parser.add_argument("--keenetic-interface", default=None, help="Keenetic interface used for managed static routes")
+    parser.add_argument("--keenetic-gateway", default=None, help="Optional Keenetic next-hop gateway")
     parser.add_argument("--status-url", default=None, help="Status feed URL (http/https or dns://hostname)")
     parser.add_argument("--ip-list-url", default=None, help="IP list TXT URL")
     parser.add_argument("--state-file", default=None, help="State file path")
     parser.add_argument("--lock-file", default=None, help="Lock file path")
     parser.add_argument("--ca-file", dest="unifi_ca_file", default=None, help="CA bundle for UniFi TLS")
     parser.add_argument("--omada-ca-file", default=None, help="CA bundle for Omada TLS")
+    parser.add_argument("--keenetic-ca-file", default=None, help="CA bundle for Keenetic TLS")
     parser.add_argument("--vpn-name", default=None, help="Exact VPN client network name for automatic route creation")
     parser.add_argument(
         "--targets", default=None, help="Comma-separated client names or MACs for automatic route creation"
@@ -591,6 +609,41 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
         _env_value(env, "STOPLIGA_OMADA_CA_FILE"),
         file_cfg.get("omada_ca_file"),
     )
+    keenetic_controller_host = _first(
+        controller_host,
+        _env_value(env, "KEENETIC_HOST"),
+        _env_value(env, "STOPLIGA_KEENETIC_HOST"),
+    )
+    keenetic_controller_port = _first(
+        controller_port,
+        _env_value(env, "KEENETIC_PORT"),
+        _env_value(env, "STOPLIGA_KEENETIC_PORT"),
+        80,
+    )
+    keenetic_base_url_raw = _first(
+        args.keenetic_base_url,
+        _env_value(env, "KEENETIC_BASE_URL"),
+        _env_value(env, "STOPLIGA_KEENETIC_BASE_URL"),
+        file_cfg.get("keenetic_base_url"),
+    )
+    if keenetic_base_url_raw is None and router_type == "keenetic" and keenetic_controller_host is not None:
+        port_value = _parse_int(keenetic_controller_port, field_name="keenetic_port")
+        base_url = f"http://{keenetic_controller_host}"
+        if port_value != 80:
+            base_url = f"{base_url}:{port_value}"
+        keenetic_base_url_raw = base_url
+    keenetic_verify_tls = _first(
+        _env_value(env, "KEENETIC_VERIFY_TLS"),
+        _env_value(env, "STOPLIGA_KEENETIC_VERIFY_TLS"),
+        file_cfg.get("keenetic_verify_tls"),
+        DEFAULTS.keenetic_verify_tls,
+    )
+    keenetic_ca_file = _first(
+        args.keenetic_ca_file,
+        _env_value(env, "KEENETIC_CA_FILE"),
+        _env_value(env, "STOPLIGA_KEENETIC_CA_FILE"),
+        file_cfg.get("keenetic_ca_file"),
+    )
 
     log_level = (
         "DEBUG"
@@ -715,6 +768,65 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
                 DEFAULTS.omada_group_size,
             ),
             field_name="omada_group_size",
+        ),
+        keenetic_base_url=_first(keenetic_base_url_raw, DEFAULTS.keenetic_base_url),
+        keenetic_username=_first(
+            args.keenetic_username,
+            _env_value(env, "KEENETIC_USERNAME"),
+            _env_value(env, "STOPLIGA_KEENETIC_USERNAME"),
+            file_cfg.get("keenetic_username"),
+            DEFAULTS.keenetic_username,
+        ),
+        keenetic_password=_first(
+            args.keenetic_password,
+            _env_secret_first(
+                env,
+                field_name="keenetic_password",
+                key="KEENETIC_PASSWORD",
+                key_file="KEENETIC_PASSWORD_FILE",
+            ),
+            _env_secret_first(
+                env,
+                field_name="keenetic_password",
+                key="STOPLIGA_KEENETIC_PASSWORD",
+                key_file="STOPLIGA_KEENETIC_PASSWORD_FILE",
+            ),
+            file_cfg.get("keenetic_password"),
+            DEFAULTS.keenetic_password,
+        ),
+        keenetic_verify_tls=_parse_bool(keenetic_verify_tls, field_name="keenetic_verify_tls"),
+        keenetic_ca_file=_parse_path(value, field_name="keenetic_ca_file") if (value := keenetic_ca_file) else None,
+        keenetic_interface=_first(
+            args.keenetic_interface,
+            _env_value(env, "KEENETIC_INTERFACE"),
+            _env_value(env, "STOPLIGA_KEENETIC_INTERFACE"),
+            file_cfg.get("keenetic_interface"),
+            DEFAULTS.keenetic_interface,
+        ),
+        keenetic_gateway=_first(
+            args.keenetic_gateway,
+            _env_value(env, "KEENETIC_GATEWAY"),
+            _env_value(env, "STOPLIGA_KEENETIC_GATEWAY"),
+            file_cfg.get("keenetic_gateway"),
+            DEFAULTS.keenetic_gateway,
+        ),
+        keenetic_auto=_parse_bool(
+            _first(
+                _env_value(env, "KEENETIC_AUTO"),
+                _env_value(env, "STOPLIGA_KEENETIC_AUTO"),
+                file_cfg.get("keenetic_auto"),
+                DEFAULTS.keenetic_auto,
+            ),
+            field_name="keenetic_auto",
+        ),
+        keenetic_reject=_parse_bool(
+            _first(
+                _env_value(env, "KEENETIC_REJECT"),
+                _env_value(env, "STOPLIGA_KEENETIC_REJECT"),
+                file_cfg.get("keenetic_reject"),
+                DEFAULTS.keenetic_reject,
+            ),
+            field_name="keenetic_reject",
         ),
         status_url=str(
             _first(
@@ -1105,6 +1217,13 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
             if not config.omada_target or not config.omada_target.strip():
                 raise ConfigError("omada mode requires STOPLIGA_OMADA_TARGET")
             _validate_api_base_url(config.omada_base_url or "", field_name="omada_base_url")
+    elif config.router_type == "keenetic":
+        if validate_connection:
+            _validate_api_base_url(config.keenetic_base_url or "", field_name="keenetic_base_url")
+        if not config.keenetic_interface or not config.keenetic_interface.strip():
+            raise ConfigError("keenetic mode requires KEENETIC_INTERFACE or STOPLIGA_KEENETIC_INTERFACE")
+        if config.keenetic_reject and not config.keenetic_auto:
+            raise ConfigError("keenetic_reject requires keenetic_auto=true")
     elif validate_connection and config.router_type == "opnsense":
         _validate_host(config.opnsense_host or "", field_name="OPNSENSE_HOST")
     elif validate_connection:
@@ -1138,4 +1257,9 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
                 )
             if config.router_type == "opnsense":
                 raise ConfigError("opnsense mode requires OPNSENSE_HOST, OPNSENSE_API_KEY and OPNSENSE_API_SECRET")
+            if config.router_type == "keenetic":
+                raise ConfigError(
+                    "keenetic mode requires KEENETIC_BASE_URL (or STOPLIGA_CONTROLLER_HOST), "
+                    "KEENETIC_USERNAME, KEENETIC_PASSWORD and KEENETIC_INTERFACE"
+                )
             raise ConfigError("unifi mode requires STOPLIGA_CONTROLLER_HOST (or UNIFI_HOST) and UNIFI_API_KEY")

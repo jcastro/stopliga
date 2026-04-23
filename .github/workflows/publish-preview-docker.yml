@@ -1,11 +1,16 @@
 name: Publish Preview Container Image
 
 on:
+  push:
+    branches:
+      - "bbb/issue-3-fritzbox"
+      - "bbb/issue-9-keenetic"
+      - "bbb/issue-10-mikrotik"
   workflow_dispatch:
     inputs:
       preview_tag:
         description: Preview GHCR tag, for example test-fritzbox
-        required: true
+        required: false
         type: string
       extra_tag:
         description: Optional immutable GHCR tag, for example test-fritzbox-abc1234
@@ -66,17 +71,31 @@ jobs:
           PREVIEW_TAG: ${{ inputs.preview_tag }}
           EXTRA_TAG: ${{ inputs.extra_tag }}
         run: |
-          tags="${IMAGE_NAME}:${PREVIEW_TAG}"
-          if [ -n "${EXTRA_TAG}" ]; then
-            tags="${tags},${IMAGE_NAME}:${EXTRA_TAG}"
+          preview="${PREVIEW_TAG}"
+          if [ -z "${preview}" ]; then
+            case "${GITHUB_REF_NAME}" in
+              "bbb/issue-3-fritzbox") preview="test-fritzbox" ;;
+              "bbb/issue-9-keenetic") preview="test-keenetic" ;;
+              "bbb/issue-10-mikrotik") preview="test-mikrotik" ;;
+              *)
+                echo "Unsupported preview branch ${GITHUB_REF_NAME}" >&2
+                exit 1
+                ;;
+            esac
           fi
+
+          extra="${EXTRA_TAG}"
+          if [ -z "${extra}" ]; then
+            extra="${preview}-${GITHUB_SHA::7}"
+          fi
+
+          tags="${IMAGE_NAME}:${preview},${IMAGE_NAME}:${extra}"
 
           {
             echo "value=${tags}"
-            echo "primary=${IMAGE_NAME}:${PREVIEW_TAG}"
-            if [ -n "${EXTRA_TAG}" ]; then
-              echo "secondary=${IMAGE_NAME}:${EXTRA_TAG}"
-            fi
+            echo "preview=${preview}"
+            echo "primary=${IMAGE_NAME}:${preview}"
+            echo "secondary=${IMAGE_NAME}:${extra}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push preview image
@@ -91,13 +110,13 @@ jobs:
             org.opencontainers.image.title=StopLiga Preview
             org.opencontainers.image.description=Preview build for router backend testing.
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ steps.app_version.outputs.value }}-${{ inputs.preview_tag }}
+            org.opencontainers.image.version=${{ steps.app_version.outputs.value }}-${{ steps.tags.outputs.preview }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ steps.build_date.outputs.value }}
           cache-from: type=gha,scope=preview-${{ github.ref_name }}
           cache-to: type=gha,mode=max,scope=preview-${{ github.ref_name }}
           build-args: |
-            VERSION=${{ steps.app_version.outputs.value }}-${{ inputs.preview_tag }}
+            VERSION=${{ steps.app_version.outputs.value }}-${{ steps.tags.outputs.preview }}
             BUILD_DATE=${{ steps.build_date.outputs.value }}
             VCS_REF=${{ github.sha }}
 

@@ -25,7 +25,7 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.13"
+DEFAULT_USER_AGENT = "stopliga/0.1.14"
 
 
 @dataclass(frozen=True)

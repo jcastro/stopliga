@@ -328,7 +328,7 @@ api_key = "file-api-key"
                 },
             )
 
-    def test_partial_bootstrap_configuration_is_rejected(self) -> None:
+    def test_targets_without_vpn_name_are_rejected(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
         with self.assertRaises(ConfigError):
@@ -337,9 +337,23 @@ api_key = "file-api-key"
                 {
                     "UNIFI_HOST": "10.0.0.2",
                     "UNIFI_API_KEY": "env-api-key",
-                    "STOPLIGA_VPN_NAME": "Mullvad DE",
+                    "STOPLIGA_TARGETS": "Living Room Apple TV",
                 },
             )
+
+    def test_vpn_name_without_targets_is_allowed(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "env-api-key",
+                "STOPLIGA_VPN_NAME": "Mullvad DE",
+            },
+        )
+        self.assertEqual(config.vpn_name, "Mullvad DE")
+        self.assertEqual(config.target_clients, ())
 
     def test_private_feed_hosts_are_rejected_by_default(self) -> None:
         parser = build_parser()

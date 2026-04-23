@@ -1313,7 +1313,11 @@ class UniFiRouterDriver(RouterDriver):
         return tuple(items)
 
     def _bootstrap_requires_manual_review(self, source: str | None) -> bool:
-        return source == "auto-bootstrap-device-fallback"
+        return bool(source and (source == "auto-bootstrap-device-fallback" or source.endswith(":device-fallback")))
+
+    @staticmethod
+    def _bootstrap_uses_all_clients(source: str | None) -> bool:
+        return bool(source and (source == "auto-bootstrap" or source.endswith(":all-clients")))
 
     def _route_target_macs(self, route_record: dict[str, object]) -> tuple[str, ...]:
         target_devices = route_record.get("target_devices")
@@ -1479,9 +1483,14 @@ class UniFiRouterDriver(RouterDriver):
         desired_ips: list[str],
     ) -> tuple[BaseRouteBackend, BootstrapPreview]:
         create_backend = choose_create_backend(client, client.resolve_site_context())
-        if self.config.vpn_name and self.config.target_clients:
+        if self.config.vpn_name:
             vpn_network = client.resolve_vpn_network(self.config.vpn_name)
-            target_devices = client.resolve_target_devices(self.config.target_clients)
+            if self.config.target_clients:
+                target_devices = client.resolve_target_devices(self.config.target_clients)
+                source = f"vpn:{self.config.vpn_name}:targets"
+            else:
+                target_devices = [ALL_CLIENTS_TARGET]
+                source = f"vpn:{self.config.vpn_name}:all-clients"
             payload = build_direct_bootstrap_payload(
                 route_name_value=self.config.route_name,
                 desired_ips=desired_ips,
@@ -1489,7 +1498,6 @@ class UniFiRouterDriver(RouterDriver):
                 vpn_network_id=str(vpn_network.get("_id")),
                 target_devices=target_devices,
             )
-            source = f"vpn:{self.config.vpn_name}"
         else:
             try:
                 vpn_network = client.pick_default_vpn_network()
@@ -1577,7 +1585,7 @@ class UniFiRouterDriver(RouterDriver):
                     bootstrap_target_macs=self._route_target_macs(preview.payload),
                 )
             applied_preview = preview
-            if preview.source.startswith("auto-bootstrap"):
+            if self._bootstrap_uses_all_clients(preview.source):
                 guard_writer(
                     preview.source,
                     str(preview.payload.get("network_id") or "") or None,
@@ -1586,16 +1594,20 @@ class UniFiRouterDriver(RouterDriver):
             try:
                 endpoint, route_record = bootstrap_backend.create_route(preview.payload)
             except StopLigaError as exc:
-                if preview.source == "auto-bootstrap":
+                if self._bootstrap_uses_all_clients(preview.source):
                     target_device = client.pick_default_target_device()
                     fallback_payload = dict(preview.payload)
                     fallback_payload["target_devices"] = [target_device]
+                    if preview.source.startswith("vpn:"):
+                        fallback_source = preview.source.removesuffix(":all-clients") + ":device-fallback"
+                    else:
+                        fallback_source = "auto-bootstrap-device-fallback"
                     log_event(
                         self.logger,
                         logging.WARNING,
                         "route_bootstrap_retry",
                         backend=preview.backend_name,
-                        source="auto-bootstrap-device-fallback",
+                        source=fallback_source,
                         reason="all_clients_target_rejected",
                     )
                     try:
@@ -1609,7 +1621,7 @@ class UniFiRouterDriver(RouterDriver):
                     applied_preview = BootstrapPreview(
                         backend_name=preview.backend_name,
                         payload=fallback_payload,
-                        source="auto-bootstrap-device-fallback",
+                        source=fallback_source,
                     )
                     guard_writer(
                         applied_preview.source,

@@ -345,9 +345,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lock-file", default=None, help="Lock file path")
     parser.add_argument("--ca-file", dest="unifi_ca_file", default=None, help="CA bundle for UniFi TLS")
     parser.add_argument("--omada-ca-file", default=None, help="CA bundle for Omada TLS")
-    parser.add_argument("--vpn-name", default=None, help="Exact VPN client network name for automatic route creation")
     parser.add_argument(
-        "--targets", default=None, help="Comma-separated client names or MACs for automatic route creation"
+        "--vpn-name",
+        default=None,
+        help="Optional exact VPN client network name for bootstrap route creation",
+    )
+    parser.add_argument(
+        "--targets",
+        default=None,
+        help="Optional comma-separated client names or MACs for bootstrap route creation; requires --vpn-name",
     )
     parser.add_argument(
         "--invalid-entry-policy",
@@ -1077,8 +1083,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError(f"invalid_entry_policy must be fail|ignore, not {config.invalid_entry_policy!r}")
     if config.router_type not in get_args(RouterType):
         raise ConfigError(f"router_type must be one of {', '.join(get_args(RouterType))}, not {config.router_type!r}")
-    if bool(config.vpn_name) != bool(config.target_clients):
-        raise ConfigError("Automatic route creation requires both STOPLIGA_VPN_NAME and STOPLIGA_TARGETS")
+    if config.target_clients and not config.vpn_name:
+        raise ConfigError("STOPLIGA_TARGETS requires STOPLIGA_VPN_NAME")
     if config.router_type != "unifi" and (config.vpn_name or config.target_clients):
         raise ConfigError("STOPLIGA_VPN_NAME and STOPLIGA_TARGETS are UniFi-only bootstrap options")
     if bool(config.gotify_url) != bool(config.gotify_token):

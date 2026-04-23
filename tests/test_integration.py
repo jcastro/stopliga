@@ -616,6 +616,35 @@ class ServiceIntegrationTests(unittest.TestCase):
                 ["192.0.2.10", "198.51.100.0/24"],
             )
 
+    def test_create_route_from_specific_vpn_without_targets_uses_all_clients(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": True},
+            ip_lines=["192.0.2.10", "198.51.100.0/24"],
+            route=None,
+            networks=[
+                {"_id": "vpn-network-2", "name": "Zeta VPN", "purpose": "vpn-client"},
+                {"_id": "vpn-network-1", "name": "Mullvad DE", "purpose": "vpn-client"},
+            ],
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                vpn_name="Mullvad DE",
+            )
+            result = StopLigaService(config).run_once()
+            self.assertTrue(result.created)
+            self.assertIsNotNone(state.route)
+            self.assertEqual(state.route["network_id"], "vpn-network-1")
+            self.assertEqual(state.route["target_devices"], [{"type": "ALL_CLIENTS"}])
+            self.assertEqual(result.bootstrap_source, "vpn:Mullvad DE:all-clients")
+
     def test_create_route_from_first_available_vpn_with_any_source(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": True},
@@ -739,6 +768,40 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertFalse(state.route["enabled"])
             self.assertEqual(state.route["target_devices"], [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}])
             self.assertEqual(result.bootstrap_source, "auto-bootstrap-device-fallback")
+
+    def test_create_route_from_specific_vpn_falls_back_to_first_device_when_all_clients_is_rejected(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": True},
+            ip_lines=["192.0.2.10", "198.51.100.0/24"],
+            route=None,
+            reject_all_clients_targets=True,
+            networks=[
+                {"_id": "vpn-network-2", "name": "Zeta VPN", "purpose": "vpn-client"},
+                {"_id": "vpn-network-1", "name": "Mullvad DE", "purpose": "vpn-client"},
+            ],
+            clients=[
+                {"hostname": "z-device", "mac": "aa:bb:cc:dd:ee:09"},
+                {"hostname": "a-device", "mac": "aa:bb:cc:dd:ee:01"},
+            ],
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                vpn_name="Mullvad DE",
+            )
+            result = StopLigaService(config).run_once()
+            self.assertTrue(result.created)
+            self.assertFalse(state.route["enabled"])
+            self.assertEqual(state.route["network_id"], "vpn-network-1")
+            self.assertEqual(state.route["target_devices"], [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}])
+            self.assertEqual(result.bootstrap_source, "vpn:Mullvad DE:device-fallback")
 
     def test_bootstrap_uses_resolved_internal_site_name_for_legacy_endpoints(self) -> None:
         state = FakeState(

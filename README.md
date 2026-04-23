@@ -72,6 +72,15 @@ STOPLIGA_ROUTE_NAME=StopLiga
 
 For UniFi Network `10.3.x` upgrade notes and a post-upgrade smoke test, see [docs/unifi-network-10.3-validation.md](docs/unifi-network-10.3-validation.md).
 
+For most UniFi setups, the minimal `.env` above is enough. `STOPLIGA_ROUTE_NAME` is usually the only route-specific setting you need.
+
+Advanced UniFi bootstrap overrides (most users can ignore these):
+
+- Leave both `STOPLIGA_VPN_NAME` and `STOPLIGA_TARGETS` unset to auto-pick the first VPN Client network and target all clients.
+- Set only `STOPLIGA_VPN_NAME` to pick the VPN Client network explicitly and still target all clients.
+- Set `STOPLIGA_VPN_NAME` and `STOPLIGA_TARGETS` together to limit the route to specific clients.
+- `STOPLIGA_TARGETS` accepts client hostnames, display names or MAC addresses. It does not accept network names.
+
 ### Omada
 
 You need:
@@ -168,7 +177,7 @@ docker run -d \
   --env-file .env \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/config:/config:ro" \
-  ghcr.io/jcastro/stopliga:0.1.14
+  ghcr.io/jcastro/stopliga:0.1.15
 ```
 
 The `/config` mount is optional.

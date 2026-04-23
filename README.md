@@ -241,6 +241,8 @@ If the environment is already prepared:
 .venv/bin/python -m compileall run_stopliga.py src tests
 ```
 
+For branch-level validation of the in-progress router backends (`FRITZ!Box`, `Keenetic`, `MikroTik`) on real hardware, see [docs/router-real-device-test-matrix.md](docs/router-real-device-test-matrix.md).
+
 ## Sources
 
 - Live block status: [`blocked.dns.hayahora.futbol`](https://hayahora.futbol/)

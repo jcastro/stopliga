@@ -25,12 +25,19 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.18"
+DEFAULT_USER_AGENT = "stopliga/0.1.19"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 # Hayahora's canonical JSON feed is historical and keeps growing over time,
 # so keep a larger ceiling here than the generic response limit.
 HAYAHORA_STATUS_MAX_BYTES = 16 * 1024 * 1024
+# Match Hayahora's public site hero logic ("NO"/"SI") as observed in the
+# current frontend bundle on 2026-04-23. This is stricter than treating any
+# single active ISP entry as a global block signal.
+HAYAHORA_HERO_DESCRIPTION = "Cloudflare"
+HAYAHORA_HERO_MIN_PROVIDER_MATCHES = 3
+HAYAHORA_HERO_MIN_CONFIRMED_IPS = 11
+HAYAHORA_HERO_SENTINEL_IPS = frozenset({"188.114.96.5", "188.114.97.5"})
 
 
 @dataclass(frozen=True)
@@ -85,12 +92,16 @@ def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, A
     if not isinstance(data, list):
         return None
 
-    active_ips: set[str] = set()
+    active_cloudflare_counts: dict[str, int] = {}
+    sentinel_hits: set[str] = set()
     for entry in data:
         if not isinstance(entry, dict):
             continue
         ip_value = entry.get("ip")
         if not isinstance(ip_value, str) or not ip_value.strip():
+            continue
+        description = entry.get("description")
+        if description != HAYAHORA_HERO_DESCRIPTION:
             continue
         state_changes = entry.get("stateChanges")
         if not isinstance(state_changes, list) or not state_changes:
@@ -101,22 +112,45 @@ def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, A
             if not isinstance(change, dict) or "state" not in change:
                 continue
             latest_state = _truthy_state(change["state"])
-        if latest_state:
-            try:
-                active_ips.add(canonicalize_ip_token(ip_value))
-            except ValueError:
-                continue
+        if latest_state is None:
+            continue
+        try:
+            normalized_ip = canonicalize_ip_token(ip_value)
+        except ValueError:
+            continue
+        if not latest_state:
+            continue
 
-    active_ip_list = sort_ip_tokens(active_ips)
-    is_blocked = bool(active_ip_list)
+        active_cloudflare_counts[normalized_ip] = active_cloudflare_counts.get(normalized_ip, 0) + 1
+        if normalized_ip in HAYAHORA_HERO_SENTINEL_IPS:
+            sentinel_hits.add(normalized_ip)
+
+    active_ip_list = sort_ip_tokens(active_cloudflare_counts.keys())
+    confirmed_ip_list = sort_ip_tokens(
+        ip
+        for ip, provider_matches in active_cloudflare_counts.items()
+        if provider_matches >= HAYAHORA_HERO_MIN_PROVIDER_MATCHES
+    )
+    sentinel_pair_blocked = HAYAHORA_HERO_SENTINEL_IPS.issubset(sentinel_hits)
+    is_blocked = len(confirmed_ip_list) >= HAYAHORA_HERO_MIN_CONFIRMED_IPS or sentinel_pair_blocked
     summarized_payload: dict[str, Any] = {
         "source": "hayahora-history-json",
         "lastUpdate": payload.get("lastUpdate"),
         "blocked": is_blocked,
         "activeIpCount": len(active_ip_list),
+        "confirmedIpCount": len(confirmed_ip_list),
+        "strategy": "hayahora-site-hero",
+        "providerMatchThreshold": HAYAHORA_HERO_MIN_PROVIDER_MATCHES,
+        "minConfirmedIpCount": HAYAHORA_HERO_MIN_CONFIRMED_IPS,
+        "sentinelPairBlocked": sentinel_pair_blocked,
+        "sentinelPair": sorted(HAYAHORA_HERO_SENTINEL_IPS),
     }
     if active_ip_list:
         summarized_payload["activeIpSample"] = active_ip_list[:5]
+    if confirmed_ip_list:
+        summarized_payload["confirmedIpSample"] = confirmed_ip_list[:5]
+    if sentinel_hits:
+        summarized_payload["sentinelPairHitSample"] = sort_ip_tokens(sentinel_hits)
     return summarized_payload, is_blocked
 
 

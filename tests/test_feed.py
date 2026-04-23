@@ -37,13 +37,15 @@ class FeedParsingTests(unittest.TestCase):
         self.assertFalse(value_b)
         self.assertTrue(value_c)
 
-    def test_parse_status_payload_supports_hayahora_history_json(self) -> None:
+    def test_parse_status_payload_uses_hayahora_site_hero_heuristic(self) -> None:
         payload = """
         {
           "lastUpdate": "2026-04-21 17:44:56",
           "data": [
             {
               "ip": "104.16.93.114",
+              "description": "Cloudflare",
+              "isp": "Movistar",
               "stateChanges": [
                 {"timestamp": "2026-04-21T17:00:00Z", "state": false},
                 {"timestamp": "2026-04-21T17:05:00Z", "state": true}
@@ -51,6 +53,8 @@ class FeedParsingTests(unittest.TestCase):
             },
             {
               "ip": "104.16.93.114",
+              "description": "Cloudflare",
+              "isp": "Orange",
               "stateChanges": [
                 {"timestamp": "2026-04-21T17:10:00Z", "state": false}
               ]
@@ -59,9 +63,87 @@ class FeedParsingTests(unittest.TestCase):
         }
         """
         parsed, is_blocked = parse_status_payload(payload)
-        self.assertTrue(is_blocked)
+        self.assertFalse(is_blocked)
         self.assertEqual(parsed["source"], "hayahora-history-json")
         self.assertEqual(parsed["activeIpCount"], 1)
+        self.assertEqual(parsed["confirmedIpCount"], 0)
+        self.assertEqual(parsed["strategy"], "hayahora-site-hero")
+
+    def test_parse_status_payload_marks_blocked_when_sentinel_pair_is_active(self) -> None:
+        payload = """
+        {
+          "lastUpdate": "2026-04-21 17:44:56",
+          "data": [
+            {
+              "ip": "188.114.96.5",
+              "description": "Cloudflare",
+              "isp": "Movistar",
+              "stateChanges": [
+                {"timestamp": "2026-04-21T17:05:00Z", "state": true}
+              ]
+            },
+            {
+              "ip": "188.114.97.5",
+              "description": "Cloudflare",
+              "isp": "DIGI",
+              "stateChanges": [
+                {"timestamp": "2026-04-21T17:10:00Z", "state": true}
+              ]
+            }
+          ]
+        }
+        """
+        parsed, is_blocked = parse_status_payload(payload)
+        self.assertTrue(is_blocked)
+        self.assertEqual(parsed["confirmedIpCount"], 0)
+        self.assertTrue(parsed["sentinelPairBlocked"])
+        self.assertEqual(parsed["sentinelPairHitSample"], ["188.114.96.5", "188.114.97.5"])
+
+    def test_parse_status_payload_marks_blocked_when_many_cloudflare_ips_match_multiple_isps(self) -> None:
+        entries: list[str] = []
+        for ip_index in range(11):
+            ip = f"104.16.93.{10 + ip_index}"
+            for isp in ("Movistar", "Orange", "DIGI"):
+                entries.append(
+                    f"""
+                    {{
+                      "ip": "{ip}",
+                      "description": "Cloudflare",
+                      "isp": "{isp}",
+                      "stateChanges": [{{"timestamp": "2026-04-21T17:05:00Z", "state": true}}]
+                    }}
+                    """
+                )
+        payload = """
+        {
+          "lastUpdate": "2026-04-21 17:44:56",
+          "data": [%s]
+        }
+        """ % ",".join(entries)
+        parsed, is_blocked = parse_status_payload(payload)
+        self.assertTrue(is_blocked)
+        self.assertEqual(parsed["confirmedIpCount"], 11)
+        self.assertEqual(parsed["minConfirmedIpCount"], 11)
+
+    def test_parse_status_payload_ignores_non_cloudflare_entries_for_global_state(self) -> None:
+        payload = """
+        {
+          "lastUpdate": "2026-04-21 17:44:56",
+          "data": [
+            {
+              "ip": "104.16.93.114",
+              "description": "Backblaze",
+              "isp": "Movistar",
+              "stateChanges": [
+                {"timestamp": "2026-04-21T17:05:00Z", "state": true}
+              ]
+            }
+          ]
+        }
+        """
+        parsed, is_blocked = parse_status_payload(payload)
+        self.assertFalse(is_blocked)
+        self.assertEqual(parsed["activeIpCount"], 0)
 
     def test_parse_ip_list_dedupes_and_sorts(self) -> None:
         raw = """
@@ -236,7 +318,15 @@ class FeedLoadingTests(unittest.TestCase):
                       "lastUpdate": "2026-04-23 09:16:40",
                       "data": [
                         {
-                          "ip": "104.21.0.97",
+                          "ip": "188.114.96.5",
+                          "description": "Cloudflare",
+                          "stateChanges": [
+                            {"timestamp": "2026-04-23 09:00:00Z", "state": true}
+                          ]
+                        },
+                        {
+                          "ip": "188.114.97.5",
+                          "description": "Cloudflare",
                           "stateChanges": [
                             {"timestamp": "2026-04-23 09:00:00Z", "state": true}
                           ]

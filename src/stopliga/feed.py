@@ -25,7 +25,7 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.17"
+DEFAULT_USER_AGENT = "stopliga/0.1.18"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 # Hayahora's canonical JSON feed is historical and keeps growing over time,
@@ -307,6 +307,9 @@ def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
 
 
 def load_status_snapshot(config: Config) -> tuple[dict[str, Any], bool]:
+    if config.status_url == HAYAHORA_STATUS_JSON_URL:
+        return _load_hayahora_canonical_status(config)
+
     dns_host = _parse_dns_feed_host(config.status_url)
     if dns_host is not None:
         if dns_host == HAYAHORA_DNS_STATUS_HOST:

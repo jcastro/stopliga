@@ -16,13 +16,13 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from stopliga.errors import InvalidFeedError, NetworkError  # noqa: E402
-from stopliga.feed import (
+from stopliga.feed import (  # noqa: E402
     load_feed_snapshot,
     load_status_snapshot,
     parse_ip_list,
     parse_status_payload,
     resolve_dns_addresses,
-)  # noqa: E402
+)
 from stopliga.models import Config  # noqa: E402
 from stopliga.state import StateStore  # noqa: E402
 from stopliga.unifi import build_ip_objects, build_route_update_template  # noqa: E402
@@ -312,7 +312,7 @@ class FeedLoadingTests(unittest.TestCase):
 
     def test_load_status_snapshot_uses_larger_limit_for_canonical_hayahora_json(self) -> None:
         config = Config(
-            status_url="dns://blocked.dns.hayahora.futbol",
+            status_url="https://hayahora.futbol/estado/data.json",
             max_response_bytes=1024,
             retries=1,
         )
@@ -335,6 +335,30 @@ class FeedLoadingTests(unittest.TestCase):
         self.assertEqual(len(fetch_calls), 1)
         self.assertEqual(fetch_calls[0]["url"], "https://hayahora.futbol/estado/data.json")
         self.assertEqual(fetch_calls[0]["max_bytes"], 16 * 1024 * 1024)
+
+    def test_load_status_snapshot_uses_canonical_hayahora_json_for_dns_alias(self) -> None:
+        config = Config(
+            status_url="dns://blocked.dns.hayahora.futbol",
+            retries=1,
+        )
+
+        with (
+            patch(
+                "stopliga.feed.fetch_text",
+                return_value="""
+                {
+                  "lastUpdate": "2026-04-23 09:16:40",
+                  "data": []
+                }
+                """,
+            ),
+            patch("stopliga.feed.resolve_dns_addresses") as dns_mock,
+        ):
+            raw_status, is_blocked = load_status_snapshot(config)
+
+        self.assertFalse(is_blocked)
+        self.assertEqual(raw_status["source"], "hayahora-history-json")
+        dns_mock.assert_not_called()
 
     def test_resolve_dns_addresses_returns_empty_list_when_dns_has_no_records(self) -> None:
         no_record_errno = getattr(socket, "EAI_NONAME", 8)

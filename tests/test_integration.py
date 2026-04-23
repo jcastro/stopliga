@@ -346,6 +346,18 @@ class SingleIterationStopEvent:
         return True
 
 
+class TwoIterationStopEvent:
+    def __init__(self) -> None:
+        self.wait_calls = 0
+
+    def is_set(self) -> bool:
+        return False
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.wait_calls += 1
+        return self.wait_calls >= 2
+
+
 class ServiceIntegrationTests(unittest.TestCase):
     def make_config(self, *, state_dir: str, **overrides: Any) -> Config:
         base = {
@@ -433,6 +445,96 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertEqual(payload["status"], "error")
             self.assertEqual(payload["consecutive_failures"], 1)
             self.assertTrue(payload["last_sync_id"])
+
+    def test_loop_mode_sends_startup_notification_once(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": False},
+            ip_lines=["192.0.2.10"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": False,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
+            },
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            state_path = Path(tmpdir) / "state.json"
+            state_path.write_text(json.dumps({"last_is_blocked": False}), encoding="utf-8")
+            config = self.make_config(
+                state_dir=tmpdir,
+                run_mode="loop",
+                interval_seconds=1,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                gotify_url=f"{feed.base_url}/gotify",
+                gotify_token="gotify-token",
+            )
+            exit_code = StopLigaService(config).run_loop(TwoIterationStopEvent())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(len(state.gotify_messages), 1)
+            self.assertEqual(state.gotify_messages[0]["title"], "StopLiga Startup")
+            self.assertIn("Startup notification test", state.gotify_messages[0]["message"])
+            self.assertIn("Providers: Gotify", state.gotify_messages[0]["message"])
+
+    def test_startup_notification_failure_does_not_block_loop(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": False},
+            ip_lines=["192.0.2.10"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": False,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
+            },
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            config = self.make_config(
+                state_dir=tmpdir,
+                run_mode="loop",
+                interval_seconds=1,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                gotify_url="https://gotify.example",
+                gotify_token="gotify-token",
+            )
+            import stopliga.notifier as notifier  # noqa: WPS433
+
+            original_post_json = notifier._post_json
+
+            def fake_post_json(
+                url: str,
+                payload: dict[str, Any],
+                *,
+                timeout: float,
+                retries: int,
+                verify_tls: bool,
+                ca_file: Any,
+            ) -> None:
+                raise NetworkError("gotify down")
+
+            notifier._post_json = fake_post_json
+            try:
+                exit_code = StopLigaService(config).run_loop(SingleIterationStopEvent())
+            finally:
+                notifier._post_json = original_post_json
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "success")
 
     def test_local_mode_updates_linked_traffic_matching_list(self) -> None:
         state = FakeState(

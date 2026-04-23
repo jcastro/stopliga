@@ -18,7 +18,7 @@ from .errors import (
 from .feed import load_feed_snapshot
 from .logging_utils import log_context, log_event
 from .models import Config, FeedSnapshot, StateSnapshot, SyncResult
-from .notifier import send_notifications
+from .notifier import send_notifications, send_startup_notification
 from .routers.factory import create_router_driver
 from .state import StateStore, utcnow_iso
 
@@ -327,6 +327,10 @@ class StopLigaService:
 
     def run_loop(self, stop_event: Event) -> int:
         log_event(self.logger, logging.INFO, "loop_start", interval_seconds=self.config.interval_seconds)
+        try:
+            send_startup_notification(self.config)
+        except StopLigaError as exc:
+            log_event(self.logger, logging.WARNING, "notification_failed", error=exc)
         while not stop_event.is_set():
             try:
                 self.run_once()

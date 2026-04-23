@@ -123,6 +123,36 @@ def _blocked_label(is_blocked: bool) -> str:
     return "ACTIVE" if is_blocked else "INACTIVE"
 
 
+def _configured_notification_providers(config: Config) -> list[str]:
+    providers: list[str] = []
+    if config.gotify_url and config.gotify_token:
+        providers.append("Gotify")
+    if config.telegram_bot_token and config.resolved_telegram_chat_id():
+        providers.append("Telegram")
+    return providers
+
+
+def build_startup_notification_message(config: Config) -> str | None:
+    providers = _configured_notification_providers(config)
+    if not providers:
+        return None
+
+    return "\n".join(
+        [
+            "🛡️ StopLiga",
+            "✅ Startup notification test",
+            "",
+            "The service has started successfully.",
+            f"- Route: {config.route_name}",
+            f"- Backend: {config.router_type}",
+            f"- Mode: {config.run_mode}",
+            f"- Providers: {', '.join(providers)}",
+            "",
+            "If you received this message, notification delivery is working.",
+        ]
+    )
+
+
 def build_notification_message(result: SyncResult, previous_state: dict[str, object]) -> str | None:
     changes: list[str] = []
 
@@ -156,12 +186,8 @@ def build_notification_message(result: SyncResult, previous_state: dict[str, obj
     )
 
 
-def send_notifications(config: Config, result: SyncResult, previous_state: dict[str, object]) -> None:
-    if result.dry_run or not config.has_notifications():
-        return
-
-    message = build_notification_message(result, previous_state)
-    if not message:
+def _send_notification_message(config: Config, *, title: str, message: str) -> None:
+    if not config.has_notifications():
         return
 
     logger = logging.getLogger("stopliga.notify")
@@ -174,7 +200,7 @@ def send_notifications(config: Config, result: SyncResult, previous_state: dict[
             _post_json(
                 gotify_url,
                 {
-                    "title": "StopLiga",
+                    "title": title,
                     "message": message,
                     "priority": config.gotify_priority,
                     "extras": {"client::display": {"contentType": "text/plain"}},
@@ -216,3 +242,25 @@ def send_notifications(config: Config, result: SyncResult, previous_state: dict[
 
     if failures:
         raise NotificationDeliveryError(failures)
+
+
+def send_startup_notification(config: Config) -> None:
+    if config.dry_run or not config.has_notifications():
+        return
+
+    message = build_startup_notification_message(config)
+    if not message:
+        return
+
+    _send_notification_message(config, title="StopLiga Startup", message=message)
+
+
+def send_notifications(config: Config, result: SyncResult, previous_state: dict[str, object]) -> None:
+    if result.dry_run or not config.has_notifications():
+        return
+
+    message = build_notification_message(result, previous_state)
+    if not message:
+        return
+
+    _send_notification_message(config, title="StopLiga", message=message)

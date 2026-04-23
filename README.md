@@ -180,6 +180,8 @@ StopLiga can also notify through:
 - Gotify
 - Telegram
 
+When notifications are configured and StopLiga runs in `loop` mode, it sends a startup test message once when the service begins so you can verify delivery without waiting for the next route change.
+
 Most users can ignore notifications until the main sync is working.
 
 ## Compatibility

@@ -9,6 +9,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -652,12 +653,13 @@ class OmadaRouterDriver(RouterDriver):
                 raise DiscoveryError(f"Omada WAN target {configured_target!r} is ambiguous")
             return wan_matches[0]
 
-        for kind, records in (
-            ("site-to-site", client.list_site_to_site_vpns(site_id)),
-            ("client-to-site", client.list_client_to_site_vpns(site_id)),
-        ):
+        vpn_sources: tuple[tuple[str, Callable[[str], list[dict[str, Any]]]], ...] = (
+            ("site-to-site", client.list_site_to_site_vpns),
+            ("client-to-site", client.list_client_to_site_vpns),
+        )
+        for kind, fetch_records in vpn_sources:
             vpn_matches: list[OmadaTarget] = []
-            for record in records:
+            for record in fetch_records(site_id):
                 target_id = _normalize_text(record.get("id"))
                 name = _normalize_text(record.get("name"))
                 aliases = {alias.lower() for alias in (target_id, name) if alias is not None}
@@ -811,10 +813,11 @@ class OmadaRouterDriver(RouterDriver):
             if _group_destinations(existing_group) != list(chunk):
                 group_changes_needed = True
 
+        desired_group_name_set = set(desired_group_names)
         extra_group_ids = sorted(
             group_id
             for name, group in managed_groups.items()
-            if name not in set(desired_group_names)
+            if name not in desired_group_name_set
             if (group_id := _normalize_text(group.get("groupId"))) is not None
         )
         if extra_group_ids:
@@ -849,6 +852,28 @@ class OmadaRouterDriver(RouterDriver):
                 changed=group_changes_needed or route_changes_needed,
                 created=route_record is None,
                 dry_run=True,
+                desired_enabled=feed_snapshot.desired_enabled,
+                current_enabled=current_enabled,
+                desired_destinations=len(desired_destinations),
+                current_destinations=len(current_destinations),
+                invalid_entries=feed_snapshot.invalid_count,
+                feed_hash=feed_snapshot.feed_hash,
+                destinations_hash=feed_snapshot.destinations_hash,
+                summary=summary,
+                is_blocked=feed_snapshot.is_blocked,
+                added_destinations=len(added_destinations),
+                removed_destinations=len(removed_destinations),
+            )
+
+        if not group_changes_needed and not route_changes_needed:
+            return SyncResult(
+                mode="local",
+                route_name=self.config.route_name,
+                route_id=_normalize_text(route_record.get("id")) if route_record else None,
+                backend_name="omada-policy-routing",
+                changed=False,
+                created=False,
+                dry_run=False,
                 desired_enabled=feed_snapshot.desired_enabled,
                 current_enabled=current_enabled,
                 desired_destinations=len(desired_destinations),

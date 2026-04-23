@@ -151,12 +151,13 @@ class FeedParsingTests(unittest.TestCase):
         192.0.2.0/24
         2001:db8::/32
         192.0.2.42
+        192.0.2.42/32
         192.0.2.42
         """
         destinations, _, invalid = parse_ip_list(raw, policy="fail")
         self.assertEqual(
             destinations,
-            ["192.0.2.0/24", "192.0.2.42", "2001:db8::/32"],
+            ["192.0.2.0/24", "192.0.2.42", "192.0.2.42/32", "2001:db8::/32"],
         )
         self.assertEqual(invalid, [])
 

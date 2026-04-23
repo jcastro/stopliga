@@ -25,7 +25,7 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.19"
+DEFAULT_USER_AGENT = "stopliga/0.1.20"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 # Hayahora's canonical JSON feed is historical and keeps growing over time,
@@ -174,14 +174,16 @@ def parse_ip_list(raw_text: str, *, policy: str) -> tuple[list[str], int, list[s
                 continue
             raise InvalidFeedError(f"Invalid IP/CIDR entry: {candidate!r}") from None
 
-    ordered = sorted(
-        valid,
-        key=lambda token: (
-            4 if ":" not in token else 6,
-            int(ipaddress.ip_network(token, strict=False).network_address),
-            ipaddress.ip_network(token, strict=False).prefixlen,
-        ),
-    )
+    def sort_key(token: str) -> tuple[int, int, int, int]:
+        network = ipaddress.ip_network(token, strict=False)
+        return (
+            network.version,
+            int(network.network_address),
+            network.prefixlen,
+            0 if "/" not in token else 1,
+        )
+
+    ordered = sorted(valid, key=sort_key)
     return ordered, raw_lines, invalid
 
 

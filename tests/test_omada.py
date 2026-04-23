@@ -396,6 +396,52 @@ class OmadaIntegrationTests(unittest.TestCase):
         self.assertEqual(len(state.policy_routes), 1)
         self.assertFalse(state.policy_routes[0]["status"])
 
+    def test_omada_noop_skips_refresh_verification_reads(self) -> None:
+        state = FakeOmadaState(
+            status_payload={
+                "lastChangeAt": "2026-04-21 12:00:00",
+                "lastChangeEpoch": 1776772800,
+                "isBlocked": True,
+                "state": "blocked",
+            },
+            ip_lines=["1.1.1.0/24"],
+            wireguards=[{"id": "wg-1", "name": "WG Main", "status": True}],
+            groups=[
+                {"groupId": "group-1", "name": "StopLiga [001]", "type": 0, "ipList": [{"ip": "1.1.1.0", "mask": 24}]}
+            ],
+            policy_routes=[
+                {
+                    "id": "route-1",
+                    "name": "StopLiga",
+                    "status": True,
+                    "protocols": [256],
+                    "backupInterface": False,
+                    "sourceType": 0,
+                    "sourceIds": ["lan-1"],
+                    "destinationType": 1,
+                    "destinationIds": ["group-1"],
+                    "interfaceType": 4,
+                    "vpnIds": ["wg-1"],
+                }
+            ],
+        )
+        with OmadaServer(state) as server, tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_config(tmpdir, server)
+            result = StopLigaService(config).run_once()
+
+        self.assertFalse(result.created)
+        self.assertFalse(result.changed)
+        self.assertEqual(
+            state.request_log.count("GET /openapi/v1/omadac-id/sites/site-1/profiles/groups"),
+            1,
+        )
+        self.assertEqual(
+            state.request_log.count(
+                "GET /openapi/v1/omadac-id/sites/site-1/routing/policy-routings?page=1&pageSize=1000"
+            ),
+            1,
+        )
+
     def test_omada_reauthenticates_when_api_reports_expired_access_token(self) -> None:
         state = FakeOmadaState(
             status_payload={
@@ -461,6 +507,7 @@ class OmadaIntegrationTests(unittest.TestCase):
             StopLigaService(config).run_once()
 
         self.assertIn("GET /openapi/v1/omadac-id/sites/site-1/vpn/site-to-site-vpns", state.request_log)
+        self.assertNotIn("GET /openapi/v1/omadac-id/sites/site-1/vpn/client-to-site-vpn-clients", state.request_log)
         self.assertNotIn(
             "GET /openapi/v1/omadac-id/sites/site-1/vpn/wireguards?page=1&pageSize=1000", state.request_log
         )

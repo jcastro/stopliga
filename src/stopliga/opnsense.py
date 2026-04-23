@@ -345,8 +345,10 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
         client.toggle_rule(rule_uuid, desired_enabled)
         client.apply_filter()
 
-    added = len([ip for ip in desired_ips if ip not in current_ips])
-    removed = len([ip for ip in current_ips if ip not in desired_ips])
+    desired_ip_set = set(desired_ips)
+    current_ip_set = set(current_ips)
+    added = len(desired_ip_set - current_ip_set)
+    removed = len(current_ip_set - desired_ip_set)
     changed = alias_created or current_ips != desired_ips or rule_changed
 
     return SyncResult(

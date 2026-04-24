@@ -594,6 +594,19 @@ api_key = "file-api-key"
                 },
             )
 
+    def test_max_destinations_can_be_overridden_from_environment(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+                "STOPLIGA_MAX_DESTINATIONS": "8192",
+            },
+        )
+        self.assertEqual(config.max_destinations, 8192)
+
     def test_state_related_files_must_use_distinct_paths(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])

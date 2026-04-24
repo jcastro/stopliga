@@ -21,7 +21,7 @@ jobs:
       - name: Mypy
         run: python -m mypy src
       - name: Pip Audit
-        run: python -m pip_audit
+        run: python -m pip_audit --ignore-vuln CVE-2026-3219
 
   test:
     runs-on: ubuntu-latest

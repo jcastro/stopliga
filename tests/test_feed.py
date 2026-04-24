@@ -170,6 +170,11 @@ class FeedParsingTests(unittest.TestCase):
         self.assertEqual(destinations, ["192.0.2.1"])
         self.assertEqual(invalid, ["not-an-ip"])
 
+    def test_parse_ip_list_rejects_feeds_over_destination_ceiling(self) -> None:
+        raw = "\n".join(f"192.0.2.{index}" for index in range(1, 4))
+        with self.assertRaisesRegex(InvalidFeedError, "safety ceiling 2"):
+            parse_ip_list(raw, policy="fail", max_destinations=2)
+
 
 class StateStoreTests(unittest.TestCase):
     def test_healthcheck_uses_last_success_timestamp(self) -> None:

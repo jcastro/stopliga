@@ -19,6 +19,7 @@ route_name = "StopLiga"
 # Optional simple settings:
 log_level = "INFO"
 dry_run = false
+max_destinations = 16384
 
 [feeds]
 status_url = "https://hayahora.futbol/estado/data.json"

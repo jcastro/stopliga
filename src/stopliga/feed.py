@@ -25,7 +25,7 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.20"
+DEFAULT_USER_AGENT = "stopliga/0.1.21"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 # Hayahora's canonical JSON feed is historical and keeps growing over time,
@@ -154,7 +154,9 @@ def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, A
     return summarized_payload, is_blocked
 
 
-def parse_ip_list(raw_text: str, *, policy: str) -> tuple[list[str], int, list[str]]:
+def parse_ip_list(
+    raw_text: str, *, policy: str, max_destinations: int | None = None
+) -> tuple[list[str], int, list[str]]:
     """Parse, validate and normalize a TXT IP list feed."""
 
     valid: set[str] = set()
@@ -173,6 +175,8 @@ def parse_ip_list(raw_text: str, *, policy: str) -> tuple[list[str], int, list[s
                 invalid.append(candidate)
                 continue
             raise InvalidFeedError(f"Invalid IP/CIDR entry: {candidate!r}") from None
+        if max_destinations is not None and len(valid) > max_destinations:
+            raise InvalidFeedError(f"Validated destination count exceeds configured safety ceiling {max_destinations}")
 
     def sort_key(token: str) -> tuple[int, int, int, int]:
         network = ipaddress.ip_network(token, strict=False)
@@ -509,13 +513,10 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
     destinations, raw_lines, invalid_entries = parse_ip_list(
         raw_ip_text,
         policy=config.invalid_entry_policy,
+        max_destinations=config.max_destinations,
     )
     if not destinations:
         raise InvalidFeedError("IP list feed produced zero valid destinations")
-    if len(destinations) > config.max_destinations:
-        raise InvalidFeedError(
-            f"Validated destination count {len(destinations)} exceeds configured safety ceiling {config.max_destinations}"
-        )
 
     desired_enabled = is_blocked
     snapshot = FeedSnapshot(

@@ -185,7 +185,7 @@ docker run -d \
   --env-file .env \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/config:/config:ro" \
-  ghcr.io/jcastro/stopliga:0.1.20
+  ghcr.io/jcastro/stopliga:0.1.21
 ```
 
 The `/config` mount is optional.
@@ -200,6 +200,10 @@ StopLiga can also notify through:
 When notifications are configured and StopLiga runs in `loop` mode, it sends a startup test message once when the service begins so you can verify delivery without waiting for the next route change.
 
 Most users can ignore notifications until the main sync is working.
+
+## Feed Safety Ceiling
+
+StopLiga refuses to apply an unexpectedly huge feed. The default ceiling is 16384 destinations. If the public list grows again before you update the container image, set `STOPLIGA_MAX_DESTINATIONS=16384` or a higher value in `.env`.
 
 ## Compatibility
 

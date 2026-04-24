@@ -55,7 +55,7 @@ class Config:
     interval_seconds: int = 300
     dry_run: bool = False
     invalid_entry_policy: InvalidEntryPolicy = "fail"
-    max_destinations: int = 2048
+    max_destinations: int = 16384
     state_file: Path = Path("/data/state.json")
     lock_file: Path = Path("/data/stopliga.lock")
     bootstrap_guard_file: Path = Path("/data/bootstrap_guard.json")

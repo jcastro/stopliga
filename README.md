@@ -2,7 +2,7 @@
 
 StopLiga reads the public block status from [`hayahora.futbol`](https://hayahora.futbol/) and keeps one managed route or rule called `StopLiga` in sync.
 
-By default it uses Hayahora's canonical JSON status feed, which avoids false positives from stale recursive DNS caches. The global blocked/unblocked decision now follows Hayahora's own current main `NO/SI` heuristic instead of flipping on the first isolated positive. The `dns://blocked.dns.hayahora.futbol` feed is still supported as an advanced override.
+It uses Hayahora's canonical JSON feed and derives destinations from the active entries in that structured payload.
 
 Supported routers:
 
@@ -185,7 +185,7 @@ docker run -d \
   --env-file .env \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/config:/config:ro" \
-  ghcr.io/jcastro/stopliga:0.1.21
+  ghcr.io/jcastro/stopliga:0.1.22
 ```
 
 The `/config` mount is optional.
@@ -204,6 +204,26 @@ Most users can ignore notifications until the main sync is working.
 ## Feed Safety Ceiling
 
 StopLiga refuses to apply an unexpectedly huge feed. The default ceiling is 16384 destinations. If the public list grows again before you update the container image, set `STOPLIGA_MAX_DESTINATIONS=16384` or a higher value in `.env`.
+
+For Omada, StopLiga splits destinations across managed IP Groups. The default `OMADA_GROUP_SIZE=32` lines up with the global feed ceiling and the conservative 512-group safety guard.
+
+## Optional ISP Destination Filtering
+
+By default StopLiga reads active destinations from Hayahora's structured status feed, limited to the last 24 hours.
+
+Set your ISP to keep only active entries for that provider:
+
+```dotenv
+STOPLIGA_HAYAHORA_ISP=DIGI
+```
+
+If `STOPLIGA_HAYAHORA_ISP` is unset, StopLiga includes active entries for all ISPs in the Hayahora payload.
+
+The lookback window defaults to 24 hours. Most users should leave it as-is, but it can be adjusted:
+
+```dotenv
+STOPLIGA_HAYAHORA_LOOKBACK_HOURS=24
+```
 
 ## Compatibility
 
@@ -267,8 +287,6 @@ For branch-level validation of the in-progress router backends (`FRITZ!Box`, `Ke
 ## Sources
 
 - Live block status JSON: [`hayahora.futbol/estado/data.json`](https://hayahora.futbol/estado/data.json)
-- Live block status DNS alternative: [`blocked.dns.hayahora.futbol`](https://hayahora.futbol/)
-- Destination IP list: [`r4y7s/laliga-ip-list`](https://github.com/r4y7s/laliga-ip-list)
 
 ## Extensibility
 

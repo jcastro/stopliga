@@ -170,6 +170,7 @@ class StopLigaService:
         sync_id: str | None = None,
         reconciliation_required: bool = False,
         previous_state: dict[str, object] | None = None,
+        notification_state: dict[str, object] | None = None,
     ) -> None:
         now = utcnow_iso()
         previous = previous_state if previous_state is not None else self._load_runtime_state()
@@ -203,6 +204,13 @@ class StopLigaService:
             rollback_error=rollback_error,
             reconciliation_required=reconciliation_required,
             last_is_blocked=result.is_blocked if result else self._optional_bool(previous, "last_is_blocked"),
+            last_gotify_message_id=self._notification_int(
+                notification_state, previous, "last_gotify_message_id"
+            ),
+            last_telegram_message_id=self._notification_int(
+                notification_state, previous, "last_telegram_message_id"
+            ),
+            last_telegram_chat_id=self._notification_str(notification_state, previous, "last_telegram_chat_id"),
             bootstrap_source=result.bootstrap_source if result else self._optional_str(previous, "bootstrap_source"),
             bootstrap_network_id=result.bootstrap_network_id
             if result
@@ -222,6 +230,35 @@ class StopLigaService:
     def _optional_bool(payload: dict[str, object], key: str) -> bool | None:
         value = payload.get(key)
         return value if isinstance(value, bool) else None
+
+    @staticmethod
+    def _optional_int(payload: dict[str, object], key: str) -> int | None:
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return None
+        return value if isinstance(value, int) else None
+
+    @classmethod
+    def _notification_int(
+        cls,
+        notification_state: dict[str, object] | None,
+        previous: dict[str, object],
+        key: str,
+    ) -> int | None:
+        if notification_state is not None and key in notification_state:
+            return cls._optional_int(notification_state, key)
+        return cls._optional_int(previous, key)
+
+    @classmethod
+    def _notification_str(
+        cls,
+        notification_state: dict[str, object] | None,
+        previous: dict[str, object],
+        key: str,
+    ) -> str | None:
+        if notification_state is not None and key in notification_state:
+            return cls._optional_str(notification_state, key)
+        return cls._optional_str(previous, key)
 
     @staticmethod
     def _string_tuple(payload: dict[str, object], key: str) -> tuple[str, ...]:
@@ -288,7 +325,24 @@ class StopLigaService:
                 )
                 self._write_bootstrap_guard(result)
                 try:
-                    send_notifications(self.config, result, previous_runtime_state)
+                    notification_result = send_notifications(self.config, result, previous_runtime_state)
+                    if notification_result.has_values:
+                        notification_state_payload: dict[str, object] = {}
+                        if notification_result.gotify_message_id is not None:
+                            notification_state_payload["last_gotify_message_id"] = notification_result.gotify_message_id
+                        if notification_result.telegram_message_id is not None:
+                            notification_state_payload["last_telegram_message_id"] = (
+                                notification_result.telegram_message_id
+                            )
+                        if notification_result.telegram_chat_id is not None:
+                            notification_state_payload["last_telegram_chat_id"] = notification_result.telegram_chat_id
+                        self._write_state(
+                            status="dry_run" if result.dry_run else "success",
+                            result=result,
+                            sync_id=sync_id,
+                            previous_state=previous_runtime_state,
+                            notification_state=notification_state_payload,
+                        )
                 except StopLigaError as exc:
                     log_event(self.logger, logging.WARNING, "notification_failed", error=exc)
                 log_event(

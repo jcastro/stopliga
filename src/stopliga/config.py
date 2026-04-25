@@ -11,7 +11,14 @@ from typing import Any, Mapping, cast, get_args
 from urllib.parse import urlparse
 
 from .errors import ConfigError
-from .models import Config, InvalidEntryPolicy, LegacyFirewallBackend, OmadaTargetType, RouterType, RunMode
+from .models import (
+    Config,
+    InvalidEntryPolicy,
+    LegacyFirewallBackend,
+    OmadaTargetType,
+    RouterType,
+    RunMode,
+)
 
 
 DEFAULTS = Config()
@@ -204,6 +211,15 @@ def _parse_csv_list(value: Any, *, field_name: str) -> tuple[str, ...]:
     raise ConfigError(f"Invalid list value for {field_name}: {value!r}")
 
 
+def _normalize_optional_string(value: Any, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ConfigError(f"{field_name} must be a string")
+    normalized = value.strip()
+    return normalized or None
+
+
 def load_config_file(path: Path | None) -> dict[str, Any]:
     """Load an optional TOML configuration file."""
 
@@ -267,6 +283,8 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "omada_group_size": omada.get("group_size"),
         "status_url": feeds.get("status_url"),
         "ip_list_url": feeds.get("ip_list_url"),
+        "hayahora_isp": feeds.get("hayahora_isp"),
+        "hayahora_lookback_hours": feeds.get("hayahora_lookback_hours"),
         "unifi_verify_tls": unifi.get("verify_tls"),
         "unifi_ca_file": unifi.get("ca_file"),
         "opnsense_host": opnsense.get("host"),
@@ -341,6 +359,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--status-url", default=None, help="Status feed URL (http/https or dns://hostname)")
     parser.add_argument("--ip-list-url", default=None, help="IP list TXT URL")
+    parser.add_argument("--hayahora-isp", default=None, help="Optional Hayahora ISP filter for active destinations")
+    parser.add_argument(
+        "--hayahora-lookback-hours",
+        type=int,
+        default=None,
+        help="Hayahora active destination lookback window in hours",
+    )
     parser.add_argument("--state-file", default=None, help="State file path")
     parser.add_argument("--lock-file", default=None, help="Lock file path")
     parser.add_argument("--ca-file", dest="unifi_ca_file", default=None, help="CA bundle for UniFi TLS")
@@ -735,6 +760,24 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
                 DEFAULTS.ip_list_url,
             )
         ),
+        hayahora_isp=_normalize_optional_string(
+            _first(
+                args.hayahora_isp,
+                _env_value(env, "STOPLIGA_HAYAHORA_ISP"),
+                file_cfg.get("hayahora_isp"),
+                DEFAULTS.hayahora_isp,
+            ),
+            field_name="hayahora_isp",
+        ),
+        hayahora_lookback_hours=_parse_int(
+            _first(
+                args.hayahora_lookback_hours,
+                _env_value(env, "STOPLIGA_HAYAHORA_LOOKBACK_HOURS"),
+                file_cfg.get("hayahora_lookback_hours"),
+                DEFAULTS.hayahora_lookback_hours,
+            ),
+            field_name="hayahora_lookback_hours",
+        ),
         unifi_verify_tls=_parse_bool(
             unifi_verify_tls,
             field_name="unifi_verify_tls",
@@ -1081,6 +1124,10 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("state_file, lock_file and bootstrap_guard_file must be different paths")
     if config.invalid_entry_policy not in {"fail", "ignore"}:
         raise ConfigError(f"invalid_entry_policy must be fail|ignore, not {config.invalid_entry_policy!r}")
+    if config.hayahora_isp is not None and not config.hayahora_isp.strip():
+        raise ConfigError("hayahora_isp must not be empty when set")
+    if config.hayahora_lookback_hours < 1:
+        raise ConfigError("hayahora_lookback_hours must be >= 1")
     if config.router_type not in get_args(RouterType):
         raise ConfigError(f"router_type must be one of {', '.join(get_args(RouterType))}, not {config.router_type!r}")
     if config.target_clients and not config.vpn_name:

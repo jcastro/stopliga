@@ -17,6 +17,7 @@ if str(SRC) not in sys.path:
 
 from stopliga.errors import InvalidFeedError, NetworkError  # noqa: E402
 from stopliga.feed import (  # noqa: E402
+    extract_hayahora_active_ips,
     load_feed_snapshot,
     load_status_snapshot,
     parse_ip_list,
@@ -145,6 +146,115 @@ class FeedParsingTests(unittest.TestCase):
         self.assertFalse(is_blocked)
         self.assertEqual(parsed["activeIpCount"], 0)
 
+    def test_extract_hayahora_active_ips_can_filter_by_isp(self) -> None:
+        payload = {
+            "lastUpdate": "2026-04-23 09:16:40",
+            "data": [
+                {
+                    "ip": "104.16.93.114",
+                    "isp": "DIGI",
+                    "stateChanges": [
+                        {"timestamp": "2026-04-23 08:00:00Z", "state": False},
+                        {"timestamp": "2026-04-23 09:00:00Z", "state": True},
+                    ],
+                },
+                {
+                    "ip": "104.16.93.115",
+                    "isp": "Movistar",
+                    "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": True}],
+                },
+                {
+                    "ip": "104.16.93.116",
+                    "isp": "DIGI",
+                    "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": False}],
+                },
+            ]
+        }
+
+        destinations, inspected, invalid = extract_hayahora_active_ips(payload, isp=" digi ")
+
+        self.assertEqual(destinations, ["104.16.93.114"])
+        self.assertEqual(inspected, 3)
+        self.assertEqual(invalid, [])
+
+    def test_extract_hayahora_active_ips_matches_isp_case_insensitively(self) -> None:
+        payload = {
+            "lastUpdate": "2026-04-23 09:16:40",
+            "data": [
+                {
+                    "ip": "104.16.93.114",
+                    "isp": "DIGI",
+                    "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": True}],
+                },
+            ]
+        }
+
+        destinations, _, _ = extract_hayahora_active_ips(payload, isp="digi")
+
+        self.assertEqual(destinations, ["104.16.93.114"])
+
+    def test_extract_hayahora_active_ips_ignores_stale_active_entries(self) -> None:
+        payload = {
+            "lastUpdate": "2026-04-23 09:16:40",
+            "data": [
+                {
+                    "ip": "104.16.93.114",
+                    "isp": "DIGI",
+                    "stateChanges": [{"timestamp": "2026-04-21 09:00:00Z", "state": True}],
+                },
+                {
+                    "ip": "104.16.93.115",
+                    "isp": "DIGI",
+                    "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": True}],
+                },
+            ],
+        }
+
+        destinations, _, _ = extract_hayahora_active_ips(payload, isp="DIGI")
+
+        self.assertEqual(destinations, ["104.16.93.115"])
+
+    def test_extract_hayahora_active_ips_rejects_unknown_isp(self) -> None:
+        payload = {
+            "lastUpdate": "2026-04-23 09:16:40",
+            "data": [
+                {
+                    "ip": "104.16.93.114",
+                    "isp": "DIGI",
+                    "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": True}],
+                },
+                {
+                    "ip": "104.16.93.115",
+                    "isp": "Movistar",
+                    "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": True}],
+                },
+            ]
+        }
+
+        with self.assertRaisesRegex(InvalidFeedError, "Valid options: DIGI, Movistar"):
+            extract_hayahora_active_ips(payload, isp="Telefonica")
+
+    def test_extract_hayahora_active_ips_uses_all_isps_without_filter(self) -> None:
+        payload = {
+            "lastUpdate": "2026-04-23 09:16:40",
+            "data": [
+                {
+                    "ip": "104.16.93.114",
+                    "isp": "DIGI",
+                    "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": True}],
+                },
+                {
+                    "ip": "104.16.93.115",
+                    "isp": "Movistar",
+                    "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": "active"}],
+                },
+            ]
+        }
+
+        destinations, _, _ = extract_hayahora_active_ips(payload)
+
+        self.assertEqual(destinations, ["104.16.93.114", "104.16.93.115"])
+
     def test_parse_ip_list_dedupes_and_sorts(self) -> None:
         raw = """
         # comment
@@ -244,82 +354,16 @@ class FeedLoadingTests(unittest.TestCase):
     def test_default_status_url_uses_canonical_hayahora_json(self) -> None:
         self.assertEqual(Config().status_url, "https://hayahora.futbol/estado/data.json")
 
-    def test_load_feed_snapshot_pins_github_raw_urls_to_single_revision(self) -> None:
-        config = Config(
-            status_url="https://raw.githubusercontent.com/example/repo/main/status.json",
-            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
-            retries=1,
-        )
-        calls: list[str] = []
-        responses = {
-            "https://api.github.com/repos/example/repo/commits/main": '{"sha": "deadbeef"}',
-            "https://raw.githubusercontent.com/example/repo/deadbeef/status.json": '{"isBlocked": true}',
-            "https://raw.githubusercontent.com/example/repo/deadbeef/ip_list.txt": "192.0.2.1\n",
-        }
-
-        def fake_fetch(url: str, **_: object) -> str:
-            calls.append(url)
-            return responses[url]
-
-        with patch("stopliga.feed.fetch_text", side_effect=fake_fetch):
-            snapshot = load_feed_snapshot(config)
-
-        self.assertTrue(snapshot.is_blocked)
-        self.assertEqual(snapshot.destinations, ["192.0.2.1"])
-        self.assertEqual(
-            calls,
-            [
-                "https://api.github.com/repos/example/repo/commits/main",
-                "https://raw.githubusercontent.com/example/repo/deadbeef/status.json",
-                "https://raw.githubusercontent.com/example/repo/deadbeef/ip_list.txt",
-            ],
-        )
-
-    def test_load_feed_snapshot_can_degrade_when_revision_resolution_fails(self) -> None:
-        config = Config(
-            status_url="https://raw.githubusercontent.com/example/repo/main/status.json",
-            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
-            retries=1,
-            strict_feed_consistency=False,
-        )
-        calls: list[str] = []
-        responses = {
-            "https://raw.githubusercontent.com/example/repo/main/status.json": '{"isBlocked": false}',
-            "https://raw.githubusercontent.com/example/repo/main/ip_list.txt": "192.0.2.1\n",
-        }
-
-        def fake_fetch(url: str, **_: object) -> str:
-            calls.append(url)
-            if url.startswith("https://api.github.com/"):
-                raise InvalidFeedError("github api unavailable")
-            return responses[url]
-
-        with patch("stopliga.feed.fetch_text", side_effect=fake_fetch):
-            snapshot = load_feed_snapshot(config)
-
-        self.assertFalse(snapshot.is_blocked)
-        self.assertEqual(snapshot.destinations, ["192.0.2.1"])
-        self.assertEqual(
-            calls,
-            [
-                "https://api.github.com/repos/example/repo/commits/main",
-                "https://raw.githubusercontent.com/example/repo/main/status.json",
-                "https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
-            ],
-        )
-
     def test_load_feed_snapshot_can_resolve_status_from_dns(self) -> None:
         config = Config(
             status_url="dns://blocked.dns.hayahora.futbol",
-            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
             retries=1,
         )
 
         with (
             patch(
                 "stopliga.feed.fetch_text",
-                side_effect=[
-                    """
+                return_value="""
                     {
                       "lastUpdate": "2026-04-23 09:16:40",
                       "data": [
@@ -340,71 +384,61 @@ class FeedLoadingTests(unittest.TestCase):
                       ]
                     }
                     """,
-                    "192.0.2.1\n",
-                ],
             ),
             patch("stopliga.feed.resolve_dns_addresses") as dns_mock,
         ):
             snapshot = load_feed_snapshot(config)
 
         self.assertTrue(snapshot.is_blocked)
-        self.assertEqual(snapshot.destinations, ["192.0.2.1"])
+        self.assertEqual(snapshot.destinations, ["188.114.96.5", "188.114.97.5"])
         self.assertEqual(snapshot.raw_status["source"], "hayahora-history-json")
         dns_mock.assert_not_called()
 
     def test_load_feed_snapshot_treats_empty_dns_status_as_not_blocked(self) -> None:
         config = Config(
             status_url="dns://blocked.dns.hayahora.futbol",
-            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
             retries=1,
         )
 
         with (
             patch(
                 "stopliga.feed.fetch_text",
-                side_effect=[
-                    """
+                return_value="""
                     {
                       "lastUpdate": "2026-04-23 09:16:40",
                       "data": []
                     }
                     """,
-                    "192.0.2.1\n",
-                ],
             ),
             patch("stopliga.feed.resolve_dns_addresses") as dns_mock,
         ):
             snapshot = load_feed_snapshot(config)
 
         self.assertFalse(snapshot.is_blocked)
-        self.assertEqual(snapshot.destinations, ["192.0.2.1"])
+        self.assertEqual(snapshot.destinations, [])
         self.assertEqual(snapshot.raw_status["source"], "hayahora-history-json")
         self.assertEqual(snapshot.raw_status["activeIpCount"], 0)
         dns_mock.assert_not_called()
 
-    def test_load_feed_snapshot_falls_back_to_dns_when_canonical_hayahora_json_fails(self) -> None:
+    def test_load_feed_snapshot_does_not_fall_back_when_hayahora_json_fails(self) -> None:
         config = Config(
             status_url="dns://blocked.dns.hayahora.futbol",
-            ip_list_url="https://raw.githubusercontent.com/example/repo/main/ip_list.txt",
             retries=1,
         )
 
         def fake_fetch(url: str, **_: object) -> str:
             if url == "https://hayahora.futbol/estado/data.json":
                 raise NetworkError("hayahora json unavailable")
-            if url == "https://raw.githubusercontent.com/example/repo/main/ip_list.txt":
-                return "192.0.2.1\n"
             raise AssertionError(f"unexpected url: {url}")
 
         with (
             patch("stopliga.feed.fetch_text", side_effect=fake_fetch),
             patch("stopliga.feed.resolve_dns_addresses", return_value=["104.21.0.97"]) as dns_mock,
         ):
-            snapshot = load_feed_snapshot(config)
+            with self.assertRaises(NetworkError):
+                load_feed_snapshot(config)
 
-        self.assertTrue(snapshot.is_blocked)
-        self.assertEqual(snapshot.raw_status["source"], "dns")
-        dns_mock.assert_called_once_with("blocked.dns.hayahora.futbol", retries=1)
+        dns_mock.assert_not_called()
 
     def test_load_status_snapshot_uses_larger_limit_for_canonical_hayahora_json(self) -> None:
         config = Config(
@@ -431,6 +465,70 @@ class FeedLoadingTests(unittest.TestCase):
         self.assertEqual(len(fetch_calls), 1)
         self.assertEqual(fetch_calls[0]["url"], "https://hayahora.futbol/estado/data.json")
         self.assertEqual(fetch_calls[0]["max_bytes"], 16 * 1024 * 1024)
+
+    def test_load_feed_snapshot_can_use_hayahora_active_isp_destinations(self) -> None:
+        config = Config(
+            hayahora_isp="DIGI",
+            retries=1,
+        )
+
+        with patch(
+            "stopliga.feed.fetch_text",
+            return_value="""
+            {
+              "lastUpdate": "2026-04-23 09:16:40",
+              "data": [
+                {
+                  "ip": "188.114.96.5",
+                  "description": "Cloudflare",
+                  "isp": "DIGI",
+                  "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
+                },
+                {
+                  "ip": "188.114.97.5",
+                  "description": "Cloudflare",
+                  "isp": "Movistar",
+                  "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
+                }
+              ]
+            }
+            """,
+        ):
+            snapshot = load_feed_snapshot(config)
+
+        self.assertTrue(snapshot.desired_enabled)
+        self.assertEqual(snapshot.destinations, ["188.114.96.5"])
+        self.assertEqual(snapshot.raw_line_count, 2)
+
+    def test_load_feed_snapshot_active_mode_uses_all_isps_when_filter_is_absent(self) -> None:
+        config = Config(retries=1)
+
+        with patch(
+            "stopliga.feed.fetch_text",
+            return_value="""
+            {
+              "lastUpdate": "2026-04-23 09:16:40",
+              "data": [
+                {
+                  "ip": "188.114.96.5",
+                  "description": "Cloudflare",
+                  "isp": "DIGI",
+                  "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
+                },
+                {
+                  "ip": "188.114.97.5",
+                  "description": "Cloudflare",
+                  "isp": "Movistar",
+                  "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
+                }
+              ]
+            }
+            """,
+        ):
+            snapshot = load_feed_snapshot(config)
+
+        self.assertTrue(snapshot.desired_enabled)
+        self.assertEqual(snapshot.destinations, ["188.114.96.5", "188.114.97.5"])
 
     def test_load_status_snapshot_uses_canonical_hayahora_json_for_dns_alias(self) -> None:
         config = Config(

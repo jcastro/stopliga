@@ -50,6 +50,27 @@ class FakeOmadaState:
     group_counter: int = 0
     route_counter: int = 0
 
+    def __post_init__(self) -> None:
+        if "data" in self.status_payload:
+            return
+        blocked = bool(
+            self.status_payload.get("isBlocked")
+            or self.status_payload.get("blocked")
+            or self.status_payload.get("state") in {"blocked", "active", "enabled"}
+        )
+        self.status_payload = {
+            "lastUpdate": "2026-04-23 09:16:40",
+            "data": [
+                {
+                    "ip": ip,
+                    "description": "Cloudflare",
+                    "isp": "DIGI",
+                    "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": blocked}],
+                }
+                for ip in self.ip_lines
+            ],
+        }
+
 
 class FakeOmadaHandler(BaseHTTPRequestHandler):
     server_version = "FakeOmada/1.0"
@@ -358,8 +379,8 @@ class OmadaIntegrationTests(unittest.TestCase):
             status_payload={
                 "lastChangeAt": "2026-04-21 12:00:00",
                 "lastChangeEpoch": 1776772800,
-                "isBlocked": False,
-                "state": "unblocked",
+                "isBlocked": True,
+                "state": "blocked",
             },
             ip_lines=["10.0.0.0/24", "20.0.0.0/24"],
             wireguards=[{"id": "wg-1", "name": "WG Main", "status": True}],
@@ -394,7 +415,7 @@ class OmadaIntegrationTests(unittest.TestCase):
         self.assertEqual(state.groups[0]["ipList"], [{"ip": "10.0.0.0", "mask": 24}])
         self.assertEqual(state.groups[1]["ipList"], [{"ip": "20.0.0.0", "mask": 24}])
         self.assertEqual(len(state.policy_routes), 1)
-        self.assertFalse(state.policy_routes[0]["status"])
+        self.assertTrue(state.policy_routes[0]["status"])
 
     def test_omada_noop_skips_refresh_verification_reads(self) -> None:
         state = FakeOmadaState(

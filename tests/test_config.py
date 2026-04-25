@@ -145,6 +145,34 @@ site = "default"
         self.assertEqual(config.telegram_bot_token, "123456:test-token")
         self.assertEqual(config.telegram_chat_id, "2165833")
 
+    def test_hayahora_isp_filter_loads_from_environment(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+                "STOPLIGA_HAYAHORA_ISP": " DIGI ",
+                "STOPLIGA_HAYAHORA_LOOKBACK_HOURS": "12",
+            },
+        )
+        self.assertEqual(config.hayahora_isp, "DIGI")
+        self.assertEqual(config.hayahora_lookback_hours, 12)
+
+    def test_hayahora_isp_filter_is_optional(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+            },
+        )
+        self.assertIsNone(config.hayahora_isp)
+        self.assertEqual(config.hayahora_lookback_hours, 24)
+
     def test_generic_controller_env_is_preferred_over_legacy_unifi_aliases(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
@@ -606,6 +634,12 @@ api_key = "file-api-key"
             },
         )
         self.assertEqual(config.max_destinations, 8192)
+
+    def test_default_omada_grouping_covers_default_destination_ceiling(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--healthcheck"])
+        config = load_config(args, {}, validate=False)
+        self.assertGreaterEqual(config.omada_group_size * 512, config.max_destinations)
 
     def test_state_related_files_must_use_distinct_paths(self) -> None:
         parser = build_parser()

@@ -34,9 +34,11 @@ class Config:
     omada_source_networks: tuple[str, ...] = ()
     omada_verify_tls: bool = True
     omada_ca_file: Path | None = None
-    omada_group_size: int = 16
+    omada_group_size: int = 32
     status_url: str = "https://hayahora.futbol/estado/data.json"
     ip_list_url: str = "https://raw.githubusercontent.com/r4y7s/laliga-ip-list/main/laliga_ip_list.txt"
+    hayahora_isp: str | None = None
+    hayahora_lookback_hours: int = 24
     unifi_verify_tls: bool = True
     unifi_ca_file: Path | None = None
     opnsense_host: str | None = None
@@ -232,6 +234,9 @@ class StateSnapshot:
     rollback_error: str | None = None
     reconciliation_required: bool = False
     last_is_blocked: bool | None = None
+    last_gotify_message_id: int | None = None
+    last_telegram_message_id: int | None = None
+    last_telegram_chat_id: str | None = None
     bootstrap_source: str | None = None
     bootstrap_network_id: str | None = None
     bootstrap_target_macs: tuple[str, ...] = ()

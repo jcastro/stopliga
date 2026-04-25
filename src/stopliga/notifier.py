@@ -16,7 +16,7 @@ from .logging_utils import log_event
 from .models import Config, SyncResult
 from .utils import make_ssl_context, sleep_with_backoff
 
-DEFAULT_USER_AGENT = "stopliga/0.1.21"
+DEFAULT_USER_AGENT = "stopliga/0.1.22"
 
 
 def _safe_notification_url(url: str) -> str:
@@ -40,6 +40,21 @@ class ProviderRequestConfig:
     ca_file: Any = None
 
 
+@dataclass(frozen=True)
+class NotificationState:
+    gotify_message_id: int | None = None
+    telegram_message_id: int | None = None
+    telegram_chat_id: str | None = None
+
+    @property
+    def has_values(self) -> bool:
+        return (
+            self.gotify_message_id is not None
+            or self.telegram_message_id is not None
+            or self.telegram_chat_id is not None
+        )
+
+
 def _post_json(
     url: str,
     payload: dict[str, Any],
@@ -48,7 +63,7 @@ def _post_json(
     retries: int,
     verify_tls: bool,
     ca_file,
-) -> None:
+) -> dict[str, Any] | None:
     body = json.dumps(payload).encode("utf-8")
     opener = urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=make_ssl_context(verify=verify_tls, ca_file=ca_file))
@@ -67,8 +82,15 @@ def _post_json(
             method="POST",
         )
         try:
-            with opener.open(request, timeout=timeout):
-                return
+            with opener.open(request, timeout=timeout) as response:
+                raw = response.read()
+                if not raw:
+                    return None
+                try:
+                    parsed = json.loads(raw.decode("utf-8", errors="replace"))
+                except json.JSONDecodeError:
+                    return None
+                return parsed if isinstance(parsed, dict) else None
         except urllib.error.HTTPError as exc:
             if exc.code in {408, 429, 500, 502, 503, 504} and attempt < retries:
                 log_event(
@@ -132,6 +154,33 @@ def _configured_notification_providers(config: Config) -> list[str]:
     return providers
 
 
+def _destination_scope_label(config: Config) -> str:
+    if config.hayahora_isp:
+        return f"ISP: {config.hayahora_isp} / last {config.hayahora_lookback_hours}h"
+    return f"ISP: all active ISPs / last {config.hayahora_lookback_hours}h"
+
+
+def _optional_int(payload: dict[str, object], key: str) -> int | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def _optional_str(payload: dict[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _block_status_changed(result: SyncResult, previous_state: dict[str, object]) -> bool:
+    previous_blocked = previous_state.get("last_is_blocked")
+    return isinstance(previous_blocked, bool) and previous_blocked != result.is_blocked
+
+
+def _destinations_changed(result: SyncResult) -> bool:
+    return bool(result.added_destinations or result.removed_destinations)
+
+
 def build_startup_notification_message(config: Config) -> str | None:
     providers = _configured_notification_providers(config)
     if not providers:
@@ -146,6 +195,7 @@ def build_startup_notification_message(config: Config) -> str | None:
             f"- Route: {config.route_name}",
             f"- Backend: {config.router_type}",
             f"- Mode: {config.run_mode}",
+            f"- Destination scope: {_destination_scope_label(config)}",
             f"- Providers: {', '.join(providers)}",
             "",
             "If you received this message, notification delivery is working.",
@@ -153,20 +203,27 @@ def build_startup_notification_message(config: Config) -> str | None:
     )
 
 
-def build_notification_message(result: SyncResult, previous_state: dict[str, object]) -> str | None:
+def build_notification_message(
+    config: Config,
+    result: SyncResult,
+    previous_state: dict[str, object],
+    *,
+    include_block_status: bool = True,
+    include_destinations: bool = True,
+) -> str | None:
     changes: list[str] = []
 
     previous_blocked = previous_state.get("last_is_blocked")
-    if isinstance(previous_blocked, bool) and previous_blocked != result.is_blocked:
+    if include_block_status and isinstance(previous_blocked, bool) and previous_blocked != result.is_blocked:
         changes.append(f"- 🚦 Block status: {_blocked_label(previous_blocked)} -> {_blocked_label(result.is_blocked)}")
 
-    if result.added_destinations or result.removed_destinations:
+    if include_destinations and (result.added_destinations or result.removed_destinations):
         parts: list[str] = []
         if result.added_destinations:
             parts.append(f"+{result.added_destinations} added")
         if result.removed_destinations:
             parts.append(f"-{result.removed_destinations} removed")
-        changes.append(f"- 🌐 IP list: {', '.join(parts)}")
+        changes.append(f"- 🌐 Destinations: {', '.join(parts)}")
 
     if not changes:
         return None
@@ -181,23 +238,44 @@ def build_notification_message(result: SyncResult, previous_state: dict[str, obj
             "",
             "Current state:",
             f"- {'🔴' if result.is_blocked else '🟢'} Blocking: {_blocked_label(result.is_blocked)}",
+            f"- 🎯 Destination scope: {_destination_scope_label(config)}",
             f"- 📦 Desired destinations: {result.desired_destinations}",
         ]
     )
 
 
-def _send_notification_message(config: Config, *, title: str, message: str) -> None:
+def _extract_gotify_message_id(response: dict[str, Any] | None) -> int | None:
+    if response is None:
+        return None
+    value = response.get("id")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _extract_telegram_message_id(response: dict[str, Any] | None) -> int | None:
+    if response is None:
+        return None
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return None
+    value = result.get("message_id")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _send_notification_message(config: Config, *, title: str, message: str) -> NotificationState:
     if not config.has_notifications():
-        return
+        return NotificationState()
 
     logger = logging.getLogger("stopliga.notify")
     failures: dict[str, str] = {}
+    gotify_message_id: int | None = None
+    telegram_message_id: int | None = None
+    telegram_chat_id: str | None = None
 
     if config.gotify_url and config.gotify_token:
         try:
             gotify_url = config.gotify_url.rstrip("/") + "/message"
             request_config = _gotify_request_config(config)
-            _post_json(
+            response = _post_json(
                 gotify_url,
                 {
                     "title": title,
@@ -210,6 +288,7 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
                 verify_tls=request_config.verify_tls,
                 ca_file=request_config.ca_file,
             )
+            gotify_message_id = _extract_gotify_message_id(response)
             log_event(logger, logging.INFO, "notification_sent", provider="gotify")
         except StopLigaError as exc:
             failures["gotify"] = str(exc)
@@ -227,7 +306,7 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
             }
             if config.telegram_topic_id is not None:
                 telegram_payload["message_thread_id"] = config.telegram_topic_id
-            _post_json(
+            response = _post_json(
                 telegram_url,
                 telegram_payload,
                 timeout=request_config.timeout,
@@ -235,6 +314,8 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
                 verify_tls=request_config.verify_tls,
                 ca_file=request_config.ca_file,
             )
+            telegram_message_id = _extract_telegram_message_id(response)
+            telegram_chat_id = telegram_target if telegram_message_id is not None else None
             log_event(logger, logging.INFO, "notification_sent", provider="telegram")
         except StopLigaError as exc:
             failures["telegram"] = str(exc)
@@ -242,6 +323,43 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
 
     if failures:
         raise NotificationDeliveryError(failures)
+    return NotificationState(
+        gotify_message_id=gotify_message_id,
+        telegram_message_id=telegram_message_id,
+        telegram_chat_id=telegram_chat_id,
+    )
+
+
+def _edit_telegram_notification_message(config: Config, *, message: str, previous_state: dict[str, object]) -> NotificationState:
+    telegram_target = config.resolved_telegram_chat_id()
+    previous_message_id = _optional_int(previous_state, "last_telegram_message_id")
+    previous_chat_id = _optional_str(previous_state, "last_telegram_chat_id")
+    if not config.telegram_bot_token or not telegram_target or previous_message_id is None:
+        return NotificationState()
+    if previous_chat_id is not None and previous_chat_id != telegram_target:
+        return NotificationState()
+
+    telegram_url = f"https://api.telegram.org/bot{config.telegram_bot_token}/editMessageText"
+    request_config = _telegram_request_config(config)
+    telegram_payload: dict[str, Any] = {
+        "chat_id": telegram_target,
+        "message_id": previous_message_id,
+        "text": message,
+        "disable_web_page_preview": True,
+    }
+    if config.telegram_topic_id is not None:
+        telegram_payload["message_thread_id"] = config.telegram_topic_id
+    response = _post_json(
+        telegram_url,
+        telegram_payload,
+        timeout=request_config.timeout,
+        retries=request_config.retries,
+        verify_tls=request_config.verify_tls,
+        ca_file=request_config.ca_file,
+    )
+    edited_message_id = _extract_telegram_message_id(response) or previous_message_id
+    log_event(logging.getLogger("stopliga.notify"), logging.INFO, "notification_sent", provider="telegram", edited=True)
+    return NotificationState(telegram_message_id=edited_message_id, telegram_chat_id=telegram_target)
 
 
 def send_startup_notification(config: Config) -> None:
@@ -255,12 +373,30 @@ def send_startup_notification(config: Config) -> None:
     _send_notification_message(config, title="StopLiga Startup", message=message)
 
 
-def send_notifications(config: Config, result: SyncResult, previous_state: dict[str, object]) -> None:
+def send_notifications(config: Config, result: SyncResult, previous_state: dict[str, object]) -> NotificationState:
     if result.dry_run or not config.has_notifications():
-        return
+        return NotificationState()
 
-    message = build_notification_message(result, previous_state)
+    block_changed = _block_status_changed(result, previous_state)
+    destinations_changed = _destinations_changed(result)
+    if not block_changed and not destinations_changed:
+        return NotificationState()
+
+    message = build_notification_message(
+        config,
+        result,
+        previous_state,
+        include_block_status=block_changed,
+        include_destinations=destinations_changed,
+    )
     if not message:
-        return
+        return NotificationState()
 
-    _send_notification_message(config, title="StopLiga", message=message)
+    if block_changed:
+        return _send_notification_message(config, title="StopLiga", message=message)
+
+    try:
+        return _edit_telegram_notification_message(config, message=message, previous_state=previous_state)
+    except StopLigaError as exc:
+        log_event(logging.getLogger("stopliga.notify"), logging.ERROR, "notification_provider_failed", provider="telegram", error=exc)
+        raise NotificationDeliveryError({"telegram": str(exc)}) from exc

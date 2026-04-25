@@ -9,9 +9,9 @@ import socket
 import ssl
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 
 from .errors import InvalidFeedError, NetworkError
 from .logging_utils import log_event
@@ -25,7 +25,7 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.21"
+DEFAULT_USER_AGENT = "stopliga/0.1.22"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 # Hayahora's canonical JSON feed is historical and keeps growing over time,
@@ -38,17 +38,6 @@ HAYAHORA_HERO_DESCRIPTION = "Cloudflare"
 HAYAHORA_HERO_MIN_PROVIDER_MATCHES = 3
 HAYAHORA_HERO_MIN_CONFIRMED_IPS = 11
 HAYAHORA_HERO_SENTINEL_IPS = frozenset({"188.114.96.5", "188.114.97.5"})
-
-
-@dataclass(frozen=True)
-class GitHubRawFile:
-    owner: str
-    repo: str
-    ref: str
-    path: str
-
-    def resolved_url(self, resolved_ref: str) -> str:
-        return f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/{resolved_ref}/{self.path}"
 
 
 def _truthy_state(value: Any) -> bool:
@@ -152,6 +141,113 @@ def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, A
     if sentinel_hits:
         summarized_payload["sentinelPairHitSample"] = sort_ip_tokens(sentinel_hits)
     return summarized_payload, is_blocked
+
+
+def normalize_hayahora_isp(value: Any) -> str | None:
+    """Normalize Hayahora ISP labels for forgiving user configuration."""
+
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.strip().casefold().split())
+    return normalized or None
+
+
+def _parse_hayahora_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip().replace("T", " ")
+    if raw.endswith("Z"):
+        raw = raw[:-1]
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _hayahora_reference_time(payload: dict[str, Any]) -> datetime:
+    parsed = _parse_hayahora_timestamp(payload.get("lastUpdate"))
+    if parsed is not None:
+        return parsed
+
+    latest: datetime | None = None
+    data = payload.get("data")
+    if isinstance(data, list):
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            changes = entry.get("stateChanges")
+            if not isinstance(changes, list):
+                continue
+            for change in changes:
+                if not isinstance(change, dict):
+                    continue
+                timestamp = _parse_hayahora_timestamp(change.get("timestamp"))
+                if timestamp is not None and (latest is None or timestamp > latest):
+                    latest = timestamp
+    return latest or datetime.now(timezone.utc)
+
+
+def extract_hayahora_active_ips(
+    payload: dict[str, Any],
+    *,
+    isp: str | None = None,
+    lookback_hours: int = 24,
+    invalid_entry_policy: str = "fail",
+    max_destinations: int | None = None,
+) -> tuple[list[str], int, list[str]]:
+    """Extract currently active Hayahora destinations, optionally filtered by ISP."""
+
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise InvalidFeedError("Hayahora active destination mode requires a status payload with a data list")
+    if lookback_hours < 1:
+        raise InvalidFeedError("Hayahora lookback window must be >= 1 hour")
+
+    target_isp = normalize_hayahora_isp(isp)
+    cutoff = _hayahora_reference_time(payload) - timedelta(hours=lookback_hours)
+    available_isps: dict[str, str] = {}
+    valid: set[str] = set()
+    invalid: list[str] = []
+    inspected = 0
+
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        inspected += 1
+        normalized_entry_isp = normalize_hayahora_isp(entry.get("isp"))
+        if normalized_entry_isp is not None:
+            available_isps.setdefault(normalized_entry_isp, str(entry.get("isp")).strip())
+        if target_isp is not None and normalized_entry_isp != target_isp:
+            continue
+        state_changes = entry.get("stateChanges")
+        if not isinstance(state_changes, list) or not state_changes:
+            continue
+        latest = state_changes[-1]
+        if not isinstance(latest, dict) or "state" not in latest:
+            continue
+        latest_timestamp = _parse_hayahora_timestamp(latest.get("timestamp"))
+        if latest_timestamp is None or latest_timestamp < cutoff:
+            continue
+        if not _truthy_state(latest["state"]):
+            continue
+        ip_value = entry.get("ip")
+        if not isinstance(ip_value, str) or not ip_value.strip():
+            continue
+        try:
+            valid.add(canonicalize_ip_token(ip_value))
+        except ValueError:
+            if invalid_entry_policy == "ignore":
+                invalid.append(ip_value)
+                continue
+            raise InvalidFeedError(f"Invalid IP/CIDR entry: {ip_value!r}") from None
+        if max_destinations is not None and len(valid) > max_destinations:
+            raise InvalidFeedError(f"Validated destination count exceeds configured safety ceiling {max_destinations}")
+
+    if target_isp is not None and target_isp not in available_isps:
+        valid_options = ", ".join(sorted(available_isps.values(), key=str.casefold))
+        raise InvalidFeedError(f"Unknown Hayahora ISP {isp!r}. Valid options: {valid_options}")
+
+    return sort_ip_tokens(valid), inspected, invalid
 
 
 def parse_ip_list(
@@ -292,6 +388,34 @@ def _load_hayahora_canonical_status(config: Config) -> tuple[dict[str, Any], boo
     return parse_status_payload(raw_status_text)
 
 
+def _load_structured_hayahora_status(config: Config) -> tuple[dict[str, Any], bool, dict[str, Any]]:
+    status_url = config.status_url
+    dns_host = _parse_dns_feed_host(status_url)
+    if dns_host == HAYAHORA_DNS_STATUS_HOST:
+        status_url = HAYAHORA_STATUS_JSON_URL
+
+    raw_status_text = fetch_text(
+        status_url,
+        timeout=config.request_timeout,
+        retries=config.retries,
+        verify_tls=config.feed_verify_tls,
+        max_bytes=max(config.max_response_bytes, HAYAHORA_STATUS_MAX_BYTES)
+        if status_url == HAYAHORA_STATUS_JSON_URL
+        else config.max_response_bytes,
+        ca_file=config.feed_ca_file,
+    )
+    try:
+        payload = json.loads(raw_status_text)
+    except json.JSONDecodeError as exc:
+        raise InvalidFeedError("Hayahora active destination mode requires a JSON status payload") from exc
+    if not isinstance(payload, dict):
+        raise InvalidFeedError("Hayahora active destination mode requires a JSON object status payload")
+    raw_status, is_blocked = parse_status_payload(raw_status_text)
+    if not isinstance(payload.get("data"), list):
+        raise InvalidFeedError("Hayahora active destination mode requires a status payload with a data list")
+    return raw_status, is_blocked, payload
+
+
 def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
     """Resolve a DNS hostname into a deterministic list of IP addresses."""
 
@@ -393,132 +517,26 @@ def _safe_log_url(url: str) -> str:
     return urlunparse((parsed.scheme, redacted_netloc, parsed.path, "", "", ""))
 
 
-def _parse_github_raw_file(url: str) -> GitHubRawFile | None:
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        return None
-    if parsed.netloc != "raw.githubusercontent.com":
-        return None
-    parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) < 4:
-        return None
-    owner, repo, ref = parts[:3]
-    path = "/".join(parts[3:])
-    if not all((owner, repo, ref, path)):
-        return None
-    return GitHubRawFile(owner=owner, repo=repo, ref=ref, path=path)
-
-
-def _resolve_github_commit_sha(
-    owner: str,
-    repo: str,
-    ref: str,
-    *,
-    timeout: float,
-    retries: int,
-    verify_tls: bool,
-    max_bytes: int = 256 * 1024,
-    ca_file: Any = None,
-) -> str:
-    api_url = f"https://api.github.com/repos/{owner}/{repo}/commits/{quote(ref, safe='')}"
-    payload = fetch_text(
-        api_url,
-        timeout=timeout,
-        retries=retries,
-        verify_tls=verify_tls,
-        max_bytes=max_bytes,
-        ca_file=ca_file,
-    )
-    try:
-        parsed = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise InvalidFeedError(f"GitHub commit lookup returned invalid JSON for {owner}/{repo}@{ref}") from exc
-    if not isinstance(parsed, dict):
-        raise InvalidFeedError(f"GitHub commit lookup returned an invalid payload for {owner}/{repo}@{ref}")
-    sha = parsed.get("sha")
-    if not isinstance(sha, str) or not sha.strip():
-        raise InvalidFeedError(f"GitHub commit lookup did not return a sha for {owner}/{repo}@{ref}")
-    return sha.strip()
-
-
-def _resolve_consistent_feed_urls(config: Config) -> tuple[str, str, str | None]:
-    status_ref = _parse_github_raw_file(config.status_url)
-    ip_ref = _parse_github_raw_file(config.ip_list_url)
-    if status_ref is None or ip_ref is None:
-        return config.status_url, config.ip_list_url, None
-    if (status_ref.owner, status_ref.repo, status_ref.ref) != (ip_ref.owner, ip_ref.repo, ip_ref.ref):
-        return config.status_url, config.ip_list_url, None
-
-    try:
-        sha = _resolve_github_commit_sha(
-            status_ref.owner,
-            status_ref.repo,
-            status_ref.ref,
-            timeout=config.request_timeout,
-            retries=config.retries,
-            verify_tls=config.feed_verify_tls,
-            max_bytes=config.max_response_bytes,
-            ca_file=config.feed_ca_file,
-        )
-    except (InvalidFeedError, NetworkError) as exc:
-        if config.strict_feed_consistency:
-            raise
-        log_event(
-            logging.getLogger("stopliga.feed"),
-            logging.WARNING,
-            "feed_revision_resolution_degraded",
-            owner=status_ref.owner,
-            repo=status_ref.repo,
-            ref=status_ref.ref,
-            error=exc,
-        )
-        return config.status_url, config.ip_list_url, None
-    return status_ref.resolved_url(sha), ip_ref.resolved_url(sha), sha
-
-
 def load_feed_snapshot(config: Config) -> FeedSnapshot:
-    """Download and validate the status + IP feed."""
+    """Download and validate the Hayahora status feed."""
 
     logger = logging.getLogger("stopliga.feed")
-    status_url, ip_list_url, source_revision = _resolve_consistent_feed_urls(config)
     log_event(
         logger,
         logging.INFO,
         "feed_check",
-        status_url=_safe_log_url(status_url),
-        ip_list_url=_safe_log_url(ip_list_url),
-        strict_consistency=config.strict_feed_consistency,
+        status_url=_safe_log_url(config.status_url),
     )
-    if source_revision:
-        log_event(logger, logging.INFO, "feed_revision_resolved", revision=source_revision)
-    elif config.status_url != status_url or config.ip_list_url != ip_list_url:
-        log_event(
-            logger,
-            logging.WARNING,
-            "feed_revision_resolution_skipped",
-            status_url=config.status_url,
-            ip_list_url=config.ip_list_url,
-        )
-    status_config = config if status_url == config.status_url else replace(config, status_url=status_url)
-    raw_status, is_blocked = load_status_snapshot(status_config)
-
-    raw_ip_text = fetch_text(
-        ip_list_url,
-        timeout=config.request_timeout,
-        retries=config.retries,
-        verify_tls=config.feed_verify_tls,
-        max_bytes=config.max_response_bytes,
-        ca_file=config.feed_ca_file,
-    )
-    destinations, raw_lines, invalid_entries = parse_ip_list(
-        raw_ip_text,
-        policy=config.invalid_entry_policy,
+    raw_status, is_blocked, status_payload = _load_structured_hayahora_status(config)
+    destinations, raw_lines, invalid_entries = extract_hayahora_active_ips(
+        status_payload,
+        isp=config.hayahora_isp,
+        lookback_hours=config.hayahora_lookback_hours,
+        invalid_entry_policy=config.invalid_entry_policy,
         max_destinations=config.max_destinations,
     )
-    if not destinations:
-        raise InvalidFeedError("IP list feed produced zero valid destinations")
-
-    desired_enabled = is_blocked
+    desired_enabled = bool(destinations)
+    is_blocked = desired_enabled
     snapshot = FeedSnapshot(
         is_blocked=is_blocked,
         desired_enabled=desired_enabled,
@@ -541,7 +559,9 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
         logger,
         logging.INFO,
         "feed_loaded",
-        revision=source_revision,
+        destination_source="hayahora_active",
+        hayahora_isp=config.hayahora_isp,
+        hayahora_lookback_hours=config.hayahora_lookback_hours,
         is_blocked=is_blocked,
         desired_enabled=desired_enabled,
         raw_lines=raw_lines,

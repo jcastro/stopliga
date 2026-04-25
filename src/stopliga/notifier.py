@@ -119,6 +119,7 @@ def _post_json(
                 sleep_with_backoff(attempt)
                 continue
             raise NetworkError(f"Notification request failed for {safe_url}: {exc}") from exc
+    return None
 
 
 def _gotify_request_config(config: Config) -> ProviderRequestConfig:
@@ -339,7 +340,9 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
     )
 
 
-def _edit_telegram_notification_message(config: Config, *, message: str, previous_state: dict[str, object]) -> NotificationState:
+def _edit_telegram_notification_message(
+    config: Config, *, message: str, previous_state: dict[str, object]
+) -> NotificationState:
     telegram_target = config.resolved_telegram_chat_id()
     previous_message_id = _optional_int(previous_state, "last_telegram_message_id")
     previous_chat_id = _optional_str(previous_state, "last_telegram_chat_id")
@@ -408,5 +411,11 @@ def send_notifications(config: Config, result: SyncResult, previous_state: dict[
     try:
         return _edit_telegram_notification_message(config, message=message, previous_state=previous_state)
     except StopLigaError as exc:
-        log_event(logging.getLogger("stopliga.notify"), logging.ERROR, "notification_provider_failed", provider="telegram", error=exc)
+        log_event(
+            logging.getLogger("stopliga.notify"),
+            logging.ERROR,
+            "notification_provider_failed",
+            provider="telegram",
+            error=exc,
+        )
         raise NotificationDeliveryError({"telegram": str(exc)}) from exc

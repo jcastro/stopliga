@@ -168,7 +168,7 @@ class FeedParsingTests(unittest.TestCase):
                     "isp": "DIGI",
                     "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": False}],
                 },
-            ]
+            ],
         }
 
         destinations, inspected, invalid = extract_hayahora_active_ips(payload, isp=" digi ")
@@ -186,7 +186,7 @@ class FeedParsingTests(unittest.TestCase):
                     "isp": "DIGI",
                     "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": True}],
                 },
-            ]
+            ],
         }
 
         destinations, _, _ = extract_hayahora_active_ips(payload, isp="digi")
@@ -228,7 +228,7 @@ class FeedParsingTests(unittest.TestCase):
                     "isp": "Movistar",
                     "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": True}],
                 },
-            ]
+            ],
         }
 
         with self.assertRaisesRegex(InvalidFeedError, "Valid options: DIGI, Movistar"):
@@ -248,7 +248,7 @@ class FeedParsingTests(unittest.TestCase):
                     "isp": "Movistar",
                     "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": "active"}],
                 },
-            ]
+            ],
         }
 
         destinations, _, _ = extract_hayahora_active_ips(payload)

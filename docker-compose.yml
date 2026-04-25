@@ -3,7 +3,7 @@ services:
     # Override STOPLIGA_IMAGE in your shell or .env if you want to pin a
     # different release. For local development you can temporarily replace this
     # with `build: .`.
-    image: ${STOPLIGA_IMAGE:-ghcr.io/jcastro/stopliga:0.1.22}
+    image: ${STOPLIGA_IMAGE:-ghcr.io/jcastro/stopliga:0.1.23}
     container_name: stopliga
     restart: unless-stopped
 

@@ -16,7 +16,7 @@ from .logging_utils import log_event
 from .models import Config, SyncResult
 from .utils import make_ssl_context, sleep_with_backoff
 
-DEFAULT_USER_AGENT = "stopliga/0.1.22"
+DEFAULT_USER_AGENT = "stopliga/0.1.23"
 
 
 def _safe_notification_url(url: str) -> str:
@@ -177,6 +177,10 @@ def _block_status_changed(result: SyncResult, previous_state: dict[str, object])
     return isinstance(previous_blocked, bool) and previous_blocked != result.is_blocked
 
 
+def _needs_initial_status_notification(previous_state: dict[str, object]) -> bool:
+    return not isinstance(previous_state.get("last_is_blocked"), bool)
+
+
 def _destinations_changed(result: SyncResult) -> bool:
     return bool(result.added_destinations or result.removed_destinations)
 
@@ -214,8 +218,13 @@ def build_notification_message(
     changes: list[str] = []
 
     previous_blocked = previous_state.get("last_is_blocked")
-    if include_block_status and isinstance(previous_blocked, bool) and previous_blocked != result.is_blocked:
-        changes.append(f"- 🚦 Block status: {_blocked_label(previous_blocked)} -> {_blocked_label(result.is_blocked)}")
+    if include_block_status:
+        if isinstance(previous_blocked, bool) and previous_blocked != result.is_blocked:
+            changes.append(
+                f"- 🚦 Block status: {_blocked_label(previous_blocked)} -> {_blocked_label(result.is_blocked)}"
+            )
+        elif not isinstance(previous_blocked, bool):
+            changes.append(f"- 🚦 Block status: {_blocked_label(result.is_blocked)}")
 
     if include_destinations and (result.added_destinations or result.removed_destinations):
         parts: list[str] = []
@@ -378,21 +387,22 @@ def send_notifications(config: Config, result: SyncResult, previous_state: dict[
         return NotificationState()
 
     block_changed = _block_status_changed(result, previous_state)
+    initial_status = _needs_initial_status_notification(previous_state)
     destinations_changed = _destinations_changed(result)
-    if not block_changed and not destinations_changed:
+    if not block_changed and not initial_status and not destinations_changed:
         return NotificationState()
 
     message = build_notification_message(
         config,
         result,
         previous_state,
-        include_block_status=block_changed,
+        include_block_status=block_changed or initial_status,
         include_destinations=destinations_changed,
     )
     if not message:
         return NotificationState()
 
-    if block_changed:
+    if block_changed or initial_status:
         return _send_notification_message(config, title="StopLiga", message=message)
 
     try:

@@ -370,6 +370,9 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
     if not desired_enabled and not desired_ips:
         added = 0
         removed = 0
+    elif current_ips == desired_ips:
+        added = 0
+        removed = 0
     else:
         desired_ip_set = set(desired_ips)
         current_ip_set = set(current_ips)

@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+IpTokenSortKey = tuple[int, int, int, int]
+
+
 def sleep_with_backoff(attempt: int) -> None:
     """Sleep with exponential backoff and bounded jitter."""
 
@@ -38,7 +41,7 @@ def canonicalize_ip_token(value: str) -> str:
     return str(ipaddress.ip_address(token))
 
 
-def ip_token_sort_key(token: str) -> tuple[int, int, int, int]:
+def ip_token_sort_key(token: str) -> IpTokenSortKey:
     """Return the deterministic ordering key for a canonical IP/CIDR token."""
 
     if "/" in token:
@@ -48,7 +51,7 @@ def ip_token_sort_key(token: str) -> tuple[int, int, int, int]:
     return (address.version, int(address), address.max_prefixlen, 0)
 
 
-def _canonicalize_ip_token_with_key(value: str) -> tuple[str, tuple[int, int, int, int]]:
+def canonicalize_ip_token_with_key(value: str) -> tuple[str, IpTokenSortKey]:
     token = value.strip()
     if not token:
         raise ValueError("empty token")
@@ -62,11 +65,23 @@ def _canonicalize_ip_token_with_key(value: str) -> tuple[str, tuple[int, int, in
 def sort_ip_tokens(values: Iterable[str]) -> list[str]:
     """Deduplicate and sort IP/CIDR tokens in a deterministic order."""
 
-    keyed_tokens: dict[str, tuple[int, int, int, int]] = {}
+    keyed_tokens: dict[str, IpTokenSortKey] = {}
     for value in values:
         if not value or not value.strip():
             continue
-        token, key = _canonicalize_ip_token_with_key(value)
+        token, key = canonicalize_ip_token_with_key(value)
+        keyed_tokens.setdefault(token, key)
+    return sorted(keyed_tokens, key=keyed_tokens.__getitem__)
+
+
+def sort_canonical_ip_tokens(values: Iterable[str]) -> list[str]:
+    """Deduplicate and sort tokens that are already canonical IP/CIDR strings."""
+
+    keyed_tokens: dict[str, IpTokenSortKey] = {}
+    for token in values:
+        if not token or not token.strip():
+            continue
+        key = ip_token_sort_key(token)
         keyed_tokens.setdefault(token, key)
     return sorted(keyed_tokens, key=keyed_tokens.__getitem__)
 

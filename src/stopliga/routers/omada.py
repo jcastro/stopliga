@@ -25,7 +25,7 @@ from ..errors import (
 )
 from ..logging_utils import log_event
 from ..models import Config, FeedSnapshot, SyncResult
-from ..utils import make_ssl_context, read_limited, sleep_with_backoff, sort_ip_tokens
+from ..utils import make_ssl_context, read_limited, sleep_with_backoff, sort_canonical_ip_tokens
 from .base import BootstrapGuardClearer, BootstrapGuardWriter, RouterDriver
 
 
@@ -99,12 +99,16 @@ def _sorted_ints(values: Any) -> list[int]:
     return sorted(result)
 
 
+def _network_sort_key(network: ipaddress.IPv4Network | ipaddress.IPv6Network) -> tuple[int, int, int, int]:
+    return (network.version, int(network.network_address), network.prefixlen, 1)
+
+
 def _collapse_destinations(destinations: Sequence[str]) -> list[str]:
     networks = [ipaddress.ip_network(token, strict=False) for token in destinations]
     if any(network.version != 4 for network in networks):
         raise UnsupportedRouteShapeError("Omada policy routing currently supports IPv4 destinations only")
     ipv4_networks = [network for network in networks if isinstance(network, ipaddress.IPv4Network)]
-    return sort_ip_tokens(str(network) for network in ipaddress.collapse_addresses(ipv4_networks))
+    return [str(network) for network in sorted(ipaddress.collapse_addresses(ipv4_networks), key=_network_sort_key)]
 
 
 def _chunked(values: Sequence[str], size: int) -> list[list[str]]:
@@ -115,7 +119,7 @@ def _group_destinations(record: dict[str, Any]) -> list[str]:
     entries = record.get("ipList")
     if not isinstance(entries, list):
         return []
-    destinations: list[str] = []
+    destinations: dict[str, tuple[int, int, int, int]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -123,8 +127,9 @@ def _group_destinations(record: dict[str, Any]) -> list[str]:
         mask_value = entry.get("mask")
         if ip_value is None or not isinstance(mask_value, int):
             continue
-        destinations.append(str(ipaddress.ip_network(f"{ip_value}/{mask_value}", strict=False)))
-    return sort_ip_tokens(destinations)
+        network = ipaddress.ip_network(f"{ip_value}/{mask_value}", strict=False)
+        destinations.setdefault(str(network), _network_sort_key(network))
+    return sorted(destinations, key=destinations.__getitem__)
 
 
 def _group_payload(name: str, destinations: Sequence[str]) -> dict[str, Any]:
@@ -137,14 +142,6 @@ def _group_payload(name: str, destinations: Sequence[str]) -> dict[str, Any]:
         "type": OMADA_GROUP_TYPE_IP,
         "ipList": ip_list,
     }
-
-
-def _route_destination_ids(record: dict[str, Any]) -> list[str]:
-    return sorted(_string_list(record.get("destinationIds")))
-
-
-def _route_source_ids(record: dict[str, Any]) -> list[str]:
-    return sorted(_string_list(record.get("sourceIds")))
 
 
 def _route_status(record: dict[str, Any]) -> bool | None:
@@ -197,7 +194,9 @@ def _normalize_policy_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _flatten_route_destinations(
-    route_record: dict[str, Any] | None, groups_by_id: dict[str, dict[str, Any]]
+    route_record: dict[str, Any] | None,
+    groups_by_id: dict[str, dict[str, Any]],
+    group_destinations_by_id: dict[str, list[str]] | None = None,
 ) -> list[str]:
     if route_record is None:
         return []
@@ -205,11 +204,14 @@ def _flatten_route_destinations(
         return []
     destinations: list[str] = []
     for group_id in _string_list(route_record.get("destinationIds")):
-        group = groups_by_id.get(group_id)
-        if group is None:
+        cached = group_destinations_by_id.get(group_id) if group_destinations_by_id is not None else None
+        if cached is not None:
+            destinations.extend(cached)
             continue
-        destinations.extend(_group_destinations(group))
-    return sort_ip_tokens(destinations)
+        group = groups_by_id.get(group_id)
+        if group is not None:
+            destinations.extend(_group_destinations(group))
+    return sort_canonical_ip_tokens(destinations)
 
 
 class OmadaClient:
@@ -756,10 +758,12 @@ class OmadaRouterDriver(RouterDriver):
 
     @staticmethod
     def _destination_delta(current: Sequence[str], desired: Sequence[str]) -> tuple[list[str], list[str]]:
+        if current == desired:
+            return [], []
         current_set = set(current)
         desired_set = set(desired)
-        added = sort_ip_tokens(desired_set - current_set)
-        removed = sort_ip_tokens(current_set - desired_set)
+        added = [token for token in desired if token not in current_set]
+        removed = [token for token in current if token not in desired_set]
         return added, removed
 
     def sync(
@@ -782,9 +786,14 @@ class OmadaRouterDriver(RouterDriver):
         }
         managed_groups = self._build_managed_groups_by_name(all_groups)
         managed_group_destinations = {name: _group_destinations(group) for name, group in managed_groups.items()}
+        managed_group_destinations_by_id = {
+            group_id: managed_group_destinations[name]
+            for name, group in managed_groups.items()
+            if (group_id := _normalize_text(group.get("groupId"))) is not None
+        }
         routes = client.list_policy_routes(site.site_id)
         route_record = self._find_route(routes)
-        current_destinations = _flatten_route_destinations(route_record, groups_by_id)
+        current_destinations = _flatten_route_destinations(route_record, groups_by_id, managed_group_destinations_by_id)
         current_enabled = _route_status(route_record) if route_record is not None else None
         if not desired_destinations:
             added_destinations: list[str] = []

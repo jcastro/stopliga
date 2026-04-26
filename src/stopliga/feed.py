@@ -18,7 +18,9 @@ from .logging_utils import log_event
 from .models import Config, FeedSnapshot
 from .utils import (
     canonicalize_ip_token,
+    canonicalize_ip_token_with_key,
     ip_token_sort_key,
+    IpTokenSortKey,
     make_ssl_context,
     read_limited,
     sleep_with_backoff,
@@ -227,7 +229,7 @@ def extract_hayahora_active_ips(
     target_isp = normalize_hayahora_isp(isp)
     cutoff = _hayahora_reference_time(payload) - timedelta(hours=lookback_hours)
     available_isps: dict[str, str] = {}
-    valid: set[str] = set()
+    valid: dict[str, IpTokenSortKey] = {}
     invalid: list[str] = []
     inspected = 0
 
@@ -235,11 +237,12 @@ def extract_hayahora_active_ips(
         if not isinstance(entry, dict):
             continue
         inspected += 1
-        normalized_entry_isp = normalize_hayahora_isp(entry.get("isp"))
-        if normalized_entry_isp is not None:
-            available_isps.setdefault(normalized_entry_isp, str(entry.get("isp")).strip())
-        if target_isp is not None and normalized_entry_isp != target_isp:
-            continue
+        if target_isp is not None:
+            normalized_entry_isp = normalize_hayahora_isp(entry.get("isp"))
+            if normalized_entry_isp is not None:
+                available_isps.setdefault(normalized_entry_isp, str(entry.get("isp")).strip())
+            if normalized_entry_isp != target_isp:
+                continue
         state_changes = entry.get("stateChanges")
         if not isinstance(state_changes, list) or not state_changes:
             continue
@@ -255,7 +258,8 @@ def extract_hayahora_active_ips(
         if not isinstance(ip_value, str) or not ip_value.strip():
             continue
         try:
-            valid.add(canonicalize_ip_token(ip_value))
+            token, key = canonicalize_ip_token_with_key(ip_value)
+            valid.setdefault(token, key)
         except ValueError:
             if invalid_entry_policy == "ignore":
                 invalid.append(ip_value)
@@ -268,7 +272,7 @@ def extract_hayahora_active_ips(
         valid_options = ", ".join(sorted(available_isps.values(), key=str.casefold))
         raise InvalidFeedError(f"Unknown Hayahora ISP {isp!r}. Valid options: {valid_options}")
 
-    return sorted(valid, key=ip_token_sort_key), inspected, invalid
+    return sorted(valid, key=valid.__getitem__), inspected, invalid
 
 
 def parse_ip_list(
@@ -276,17 +280,18 @@ def parse_ip_list(
 ) -> tuple[list[str], int, list[str]]:
     """Parse, validate and normalize a TXT IP list feed."""
 
-    valid: set[str] = set()
+    valid: dict[str, IpTokenSortKey] = {}
     invalid: list[str] = []
     raw_lines = 0
 
     for line in raw_text.splitlines():
         raw_lines += 1
-        candidate = line.split("#", 1)[0].strip()
+        candidate = line.partition("#")[0].strip()
         if not candidate:
             continue
         try:
-            valid.add(canonicalize_ip_token(candidate))
+            token, key = canonicalize_ip_token_with_key(candidate)
+            valid.setdefault(token, key)
         except ValueError:
             if policy == "ignore":
                 invalid.append(candidate)
@@ -295,7 +300,7 @@ def parse_ip_list(
         if max_destinations is not None and len(valid) > max_destinations:
             raise InvalidFeedError(f"Validated destination count exceeds configured safety ceiling {max_destinations}")
 
-    ordered = sorted(valid, key=ip_token_sort_key)
+    ordered = sorted(valid, key=valid.__getitem__)
     return ordered, raw_lines, invalid
 
 
@@ -400,7 +405,7 @@ def _load_hayahora_canonical_status(config: Config) -> tuple[dict[str, Any], boo
     return parse_status_payload(raw_status_text)
 
 
-def _load_structured_hayahora_status(config: Config) -> tuple[dict[str, Any], bool, dict[str, Any]]:
+def _load_structured_hayahora_status(config: Config) -> dict[str, Any]:
     status_url = config.status_url
     dns_host = _parse_dns_feed_host(status_url)
     if dns_host == HAYAHORA_DNS_STATUS_HOST:
@@ -422,10 +427,22 @@ def _load_structured_hayahora_status(config: Config) -> tuple[dict[str, Any], bo
         raise InvalidFeedError("Hayahora active destination mode requires a JSON status payload") from exc
     if not isinstance(payload, dict):
         raise InvalidFeedError("Hayahora active destination mode requires a JSON object status payload")
-    raw_status, is_blocked = parse_status_payload_value(payload)
     if not isinstance(payload.get("data"), list):
         raise InvalidFeedError("Hayahora active destination mode requires a status payload with a data list")
-    return raw_status, is_blocked, payload
+    return payload
+
+
+def _summarize_hayahora_active_status(
+    payload: dict[str, Any], *, is_blocked: bool, active_ip_count: int, inspected_entries: int
+) -> dict[str, Any]:
+    return {
+        "source": "hayahora-history-json",
+        "lastUpdate": payload.get("lastUpdate"),
+        "blocked": is_blocked,
+        "activeIpCount": active_ip_count,
+        "inspectedEntryCount": inspected_entries,
+        "strategy": "hayahora-active-destinations",
+    }
 
 
 def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
@@ -539,7 +556,7 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
         "feed_check",
         status_url=_safe_log_url(config.status_url),
     )
-    raw_status, is_blocked, status_payload = _load_structured_hayahora_status(config)
+    status_payload = _load_structured_hayahora_status(config)
     destinations, raw_lines, invalid_entries = extract_hayahora_active_ips(
         status_payload,
         isp=config.hayahora_isp,
@@ -549,6 +566,12 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
     )
     desired_enabled = bool(destinations)
     is_blocked = desired_enabled
+    raw_status = _summarize_hayahora_active_status(
+        status_payload,
+        is_blocked=is_blocked,
+        active_ip_count=len(destinations),
+        inspected_entries=raw_lines,
+    )
     snapshot = FeedSnapshot(
         is_blocked=is_blocked,
         desired_enabled=desired_enabled,

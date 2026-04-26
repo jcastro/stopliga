@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import heapq
 import logging
 import socket
 import ssl
@@ -52,13 +53,26 @@ def _truthy_state(value: Any) -> bool:
     raise InvalidFeedError(f"Unsupported status value: {value!r}")
 
 
-def parse_status_payload(raw_text: str) -> tuple[dict[str, Any], bool]:
-    """Parse the status JSON defensively."""
+def _ip_token_sort_key(token: str) -> tuple[int, int, int, int]:
+    network = ipaddress.ip_network(token, strict=False)
+    return (
+        network.version,
+        int(network.network_address),
+        network.prefixlen,
+        0 if "/" not in token else 1,
+    )
 
-    try:
-        payload = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise InvalidFeedError("Status feed is not valid JSON") from exc
+
+def _sample_ip_tokens(values: Any, *, limit: int = 5) -> list[str]:
+    if limit < 1:
+        return []
+    unique = {canonicalize_ip_token(value) for value in values if isinstance(value, str) and value.strip()}
+    return heapq.nsmallest(limit, unique, key=_ip_token_sort_key)
+
+
+def parse_status_payload_value(payload: Any) -> tuple[dict[str, Any], bool]:
+    """Parse a decoded status payload defensively."""
+
     if not isinstance(payload, dict):
         raise InvalidFeedError("Status feed root must be a JSON object")
 
@@ -74,6 +88,16 @@ def parse_status_payload(raw_text: str) -> tuple[dict[str, Any], bool]:
     raise InvalidFeedError(
         "Status feed does not expose isBlocked, blocked, state or a supported hayahora history payload"
     )
+
+
+def parse_status_payload(raw_text: str) -> tuple[dict[str, Any], bool]:
+    """Parse the status JSON defensively."""
+
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise InvalidFeedError("Status feed is not valid JSON") from exc
+    return parse_status_payload_value(payload)
 
 
 def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], bool] | None:
@@ -97,10 +121,11 @@ def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, A
             continue
 
         latest_state: bool | None = None
-        for change in state_changes:
+        for change in reversed(state_changes):
             if not isinstance(change, dict) or "state" not in change:
                 continue
             latest_state = _truthy_state(change["state"])
+            break
         if latest_state is None:
             continue
         try:
@@ -114,30 +139,31 @@ def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, A
         if normalized_ip in HAYAHORA_HERO_SENTINEL_IPS:
             sentinel_hits.add(normalized_ip)
 
-    active_ip_list = sort_ip_tokens(active_cloudflare_counts.keys())
-    confirmed_ip_list = sort_ip_tokens(
+    active_ip_count = len(active_cloudflare_counts)
+    confirmed_ips = {
         ip
         for ip, provider_matches in active_cloudflare_counts.items()
         if provider_matches >= HAYAHORA_HERO_MIN_PROVIDER_MATCHES
-    )
+    }
+    confirmed_ip_count = len(confirmed_ips)
     sentinel_pair_blocked = HAYAHORA_HERO_SENTINEL_IPS.issubset(sentinel_hits)
-    is_blocked = len(confirmed_ip_list) >= HAYAHORA_HERO_MIN_CONFIRMED_IPS or sentinel_pair_blocked
+    is_blocked = confirmed_ip_count >= HAYAHORA_HERO_MIN_CONFIRMED_IPS or sentinel_pair_blocked
     summarized_payload: dict[str, Any] = {
         "source": "hayahora-history-json",
         "lastUpdate": payload.get("lastUpdate"),
         "blocked": is_blocked,
-        "activeIpCount": len(active_ip_list),
-        "confirmedIpCount": len(confirmed_ip_list),
+        "activeIpCount": active_ip_count,
+        "confirmedIpCount": confirmed_ip_count,
         "strategy": "hayahora-site-hero",
         "providerMatchThreshold": HAYAHORA_HERO_MIN_PROVIDER_MATCHES,
         "minConfirmedIpCount": HAYAHORA_HERO_MIN_CONFIRMED_IPS,
         "sentinelPairBlocked": sentinel_pair_blocked,
         "sentinelPair": sorted(HAYAHORA_HERO_SENTINEL_IPS),
     }
-    if active_ip_list:
-        summarized_payload["activeIpSample"] = active_ip_list[:5]
-    if confirmed_ip_list:
-        summarized_payload["confirmedIpSample"] = confirmed_ip_list[:5]
+    if active_ip_count:
+        summarized_payload["activeIpSample"] = _sample_ip_tokens(active_cloudflare_counts.keys())
+    if confirmed_ip_count:
+        summarized_payload["confirmedIpSample"] = _sample_ip_tokens(confirmed_ips)
     if sentinel_hits:
         summarized_payload["sentinelPairHitSample"] = sort_ip_tokens(sentinel_hits)
     return summarized_payload, is_blocked
@@ -274,16 +300,7 @@ def parse_ip_list(
         if max_destinations is not None and len(valid) > max_destinations:
             raise InvalidFeedError(f"Validated destination count exceeds configured safety ceiling {max_destinations}")
 
-    def sort_key(token: str) -> tuple[int, int, int, int]:
-        network = ipaddress.ip_network(token, strict=False)
-        return (
-            network.version,
-            int(network.network_address),
-            network.prefixlen,
-            0 if "/" not in token else 1,
-        )
-
-    ordered = sorted(valid, key=sort_key)
+    ordered = sorted(valid, key=_ip_token_sort_key)
     return ordered, raw_lines, invalid
 
 
@@ -410,7 +427,7 @@ def _load_structured_hayahora_status(config: Config) -> tuple[dict[str, Any], bo
         raise InvalidFeedError("Hayahora active destination mode requires a JSON status payload") from exc
     if not isinstance(payload, dict):
         raise InvalidFeedError("Hayahora active destination mode requires a JSON object status payload")
-    raw_status, is_blocked = parse_status_payload(raw_status_text)
+    raw_status, is_blocked = parse_status_payload_value(payload)
     if not isinstance(payload.get("data"), list):
         raise InvalidFeedError("Hayahora active destination mode requires a status payload with a data list")
     return raw_status, is_blocked, payload

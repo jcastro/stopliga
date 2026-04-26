@@ -746,15 +746,16 @@ class OmadaRouterDriver(RouterDriver):
         self,
         *,
         route_id: str | None,
-        target: OmadaTarget,
+        target_label: str | None,
         desired_enabled: bool,
         desired_destinations: Sequence[str],
         current_destinations: Sequence[str],
         group_count: int,
     ) -> str:
+        target = target_label or "<not-resolved>"
         return (
             f"backend=omada-policy-routing | route={self.config.route_name} | route_id={route_id or '<new>'} | "
-            f"target={target.label} | enabled_desired={desired_enabled} | "
+            f"target={target} | enabled_desired={desired_enabled} | "
             f"feed_destinations={len(desired_destinations)} | current_destinations={len(current_destinations)} | "
             f"managed_groups={group_count}"
         )
@@ -779,8 +780,6 @@ class OmadaRouterDriver(RouterDriver):
 
         client = OmadaClient(self.config)
         site = client.resolve_site()
-        target = self._resolve_target(client, site.site_id)
-        source_ids = self._resolve_source_network_ids(client, site.site_id)
         desired_destinations = _collapse_destinations(feed_snapshot.destinations)
 
         all_groups = client.list_groups(site.site_id)
@@ -797,11 +796,11 @@ class OmadaRouterDriver(RouterDriver):
             removed_destinations: list[str] = []
             summary = self._summary(
                 route_id=_normalize_text(route_record.get("id")) if route_record else None,
-                target=target,
+                target_label=None,
                 desired_enabled=False,
                 desired_destinations=desired_destinations,
                 current_destinations=current_destinations,
-                group_count=len(self._build_managed_groups_by_name(all_groups)),
+                group_count=len(managed_groups),
             )
             if route_record is None or current_enabled is False:
                 return SyncResult(
@@ -877,6 +876,8 @@ class OmadaRouterDriver(RouterDriver):
                 removed_destinations=len(removed_destinations),
             )
 
+        target = self._resolve_target(client, site.site_id)
+        source_ids = self._resolve_source_network_ids(client, site.site_id)
         desired_chunks = _chunked(desired_destinations, self.config.omada_group_size)
         if len(desired_chunks) > OMADA_MAX_GROUPS:
             raise RemoteRequestError(
@@ -918,7 +919,7 @@ class OmadaRouterDriver(RouterDriver):
         added_destinations, removed_destinations = self._destination_delta(current_destinations, desired_destinations)
         summary = self._summary(
             route_id=_normalize_text(route_record.get("id")) if route_record else None,
-            target=target,
+            target_label=target.label,
             desired_enabled=feed_snapshot.desired_enabled,
             desired_destinations=desired_destinations,
             current_destinations=current_destinations,
@@ -1059,7 +1060,7 @@ class OmadaRouterDriver(RouterDriver):
 
             summary = self._summary(
                 route_id=_normalize_text(refreshed_route.get("id")),
-                target=target,
+                target_label=target.label,
                 desired_enabled=feed_snapshot.desired_enabled,
                 desired_destinations=desired_destinations,
                 current_destinations=current_destinations,

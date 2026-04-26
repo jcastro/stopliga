@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,8 +19,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from stopliga.models import Config  # noqa: E402
+from stopliga.models import Config, FeedSnapshot  # noqa: E402
 from stopliga.errors import DiscoveryError, RemoteRequestError, UnsupportedRouteShapeError  # noqa: E402
+from stopliga.routers.omada import OmadaRouterDriver, OmadaSite  # noqa: E402
 from stopliga.service import StopLigaService  # noqa: E402
 
 
@@ -680,3 +682,78 @@ class OmadaIntegrationTests(unittest.TestCase):
             config = self._build_config(tmpdir, server)
             with self.assertRaises(UnsupportedRouteShapeError):
                 StopLigaService(config).run_once()
+
+
+class OmadaPerformanceTests(unittest.TestCase):
+    def test_empty_inactive_sync_skips_target_and_source_discovery(self) -> None:
+        calls: list[str] = []
+
+        class FakeClient:
+            def __init__(self, config: Config):
+                del config
+
+            def resolve_site(self) -> OmadaSite:
+                calls.append("resolve_site")
+                return OmadaSite(site_id="site-1", name="Default")
+
+            def list_groups(self, site_id: str) -> list[dict[str, Any]]:
+                calls.append(f"list_groups:{site_id}")
+                return []
+
+            def list_policy_routes(self, site_id: str) -> list[dict[str, Any]]:
+                calls.append(f"list_policy_routes:{site_id}")
+                return []
+
+            def list_site_to_site_vpns(self, site_id: str) -> list[dict[str, Any]]:
+                calls.append(f"list_site_to_site_vpns:{site_id}")
+                return []
+
+            def list_client_to_site_vpns(self, site_id: str) -> list[dict[str, Any]]:
+                calls.append(f"list_client_to_site_vpns:{site_id}")
+                return []
+
+            def list_wireguard_vpns(self, site_id: str) -> list[dict[str, Any]]:
+                calls.append(f"list_wireguard_vpns:{site_id}")
+                return []
+
+            def list_lan_networks(self, site_id: str) -> list[dict[str, Any]]:
+                calls.append(f"list_lan_networks:{site_id}")
+                return []
+
+        config = Config(
+            router_type="omada",
+            site="Default",
+            route_name="StopLiga",
+            omada_base_url="https://controller.example",
+            omada_client_id="client-id",
+            omada_client_secret="client-secret",
+            omada_omadac_id="omadac-id",
+            omada_target_type="vpn",
+            omada_target="WG Main",
+        )
+        snapshot = FeedSnapshot(
+            is_blocked=False,
+            desired_enabled=False,
+            destinations=[],
+            raw_status={},
+            raw_line_count=0,
+            valid_count=0,
+            invalid_count=0,
+            invalid_entries=[],
+            destinations_hash="destinations",
+            feed_hash="feed",
+        )
+
+        with patch("stopliga.routers.omada.OmadaClient", FakeClient):
+            result = OmadaRouterDriver(config).sync(
+                snapshot,
+                {},
+                guard_writer=lambda *args, **kwargs: None,
+                guard_clearer=lambda *args, **kwargs: None,
+            )
+
+        self.assertFalse(result.changed)
+        self.assertEqual(
+            calls,
+            ["resolve_site", "list_groups:site-1", "list_policy_routes:site-1"],
+        )

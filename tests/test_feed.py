@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -499,6 +500,38 @@ class FeedLoadingTests(unittest.TestCase):
         self.assertTrue(snapshot.desired_enabled)
         self.assertEqual(snapshot.destinations, ["188.114.96.5"])
         self.assertEqual(snapshot.raw_line_count, 2)
+
+    def test_load_feed_snapshot_decodes_structured_hayahora_json_once(self) -> None:
+        config = Config(retries=1)
+        payload = """
+            {
+              "lastUpdate": "2026-04-23 09:16:40",
+              "data": [
+                {
+                  "ip": "188.114.96.5",
+                  "description": "Cloudflare",
+                  "isp": "DIGI",
+                  "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
+                }
+              ]
+            }
+            """
+        real_json_loads = json.loads
+        loads_calls = 0
+
+        def counting_json_loads(raw: str) -> object:
+            nonlocal loads_calls
+            loads_calls += 1
+            return real_json_loads(raw)
+
+        with (
+            patch("stopliga.feed.fetch_text", return_value=payload),
+            patch("stopliga.feed.json.loads", side_effect=counting_json_loads),
+        ):
+            snapshot = load_feed_snapshot(config)
+
+        self.assertEqual(loads_calls, 1)
+        self.assertEqual(snapshot.destinations, ["188.114.96.5"])
 
     def test_load_feed_snapshot_active_mode_uses_all_isps_when_filter_is_absent(self) -> None:
         config = Config(retries=1)

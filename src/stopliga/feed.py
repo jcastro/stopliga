@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import ipaddress
-import json
 import heapq
+import json
 import logging
 import socket
 import ssl
@@ -19,6 +18,7 @@ from .logging_utils import log_event
 from .models import Config, FeedSnapshot
 from .utils import (
     canonicalize_ip_token,
+    ip_token_sort_key,
     make_ssl_context,
     read_limited,
     sleep_with_backoff,
@@ -53,21 +53,11 @@ def _truthy_state(value: Any) -> bool:
     raise InvalidFeedError(f"Unsupported status value: {value!r}")
 
 
-def _ip_token_sort_key(token: str) -> tuple[int, int, int, int]:
-    network = ipaddress.ip_network(token, strict=False)
-    return (
-        network.version,
-        int(network.network_address),
-        network.prefixlen,
-        0 if "/" not in token else 1,
-    )
-
-
-def _sample_ip_tokens(values: Any, *, limit: int = 5) -> list[str]:
+def _sample_canonical_ip_tokens(values: Any, *, limit: int = 5) -> list[str]:
     if limit < 1:
         return []
-    unique = {canonicalize_ip_token(value) for value in values if isinstance(value, str) and value.strip()}
-    return heapq.nsmallest(limit, unique, key=_ip_token_sort_key)
+    unique = {value for value in values if isinstance(value, str) and value.strip()}
+    return heapq.nsmallest(limit, unique, key=ip_token_sort_key)
 
 
 def parse_status_payload_value(payload: Any) -> tuple[dict[str, Any], bool]:
@@ -161,11 +151,11 @@ def _parse_hayahora_status_payload(payload: dict[str, Any]) -> tuple[dict[str, A
         "sentinelPair": sorted(HAYAHORA_HERO_SENTINEL_IPS),
     }
     if active_ip_count:
-        summarized_payload["activeIpSample"] = _sample_ip_tokens(active_cloudflare_counts.keys())
+        summarized_payload["activeIpSample"] = _sample_canonical_ip_tokens(active_cloudflare_counts.keys())
     if confirmed_ip_count:
-        summarized_payload["confirmedIpSample"] = _sample_ip_tokens(confirmed_ips)
+        summarized_payload["confirmedIpSample"] = _sample_canonical_ip_tokens(confirmed_ips)
     if sentinel_hits:
-        summarized_payload["sentinelPairHitSample"] = sort_ip_tokens(sentinel_hits)
+        summarized_payload["sentinelPairHitSample"] = sorted(sentinel_hits, key=ip_token_sort_key)
     return summarized_payload, is_blocked
 
 
@@ -181,13 +171,18 @@ def normalize_hayahora_isp(value: Any) -> str | None:
 def _parse_hayahora_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
-    raw = value.strip().replace("T", " ")
+    raw = value.strip()
+    if "T" not in raw and " " not in raw:
+        return None
     if raw.endswith("Z"):
-        raw = raw[:-1]
+        raw = raw[:-1] + "+00:00"
     try:
-        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        parsed = datetime.fromisoformat(raw)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _hayahora_reference_time(payload: dict[str, Any]) -> datetime:
@@ -273,7 +268,7 @@ def extract_hayahora_active_ips(
         valid_options = ", ".join(sorted(available_isps.values(), key=str.casefold))
         raise InvalidFeedError(f"Unknown Hayahora ISP {isp!r}. Valid options: {valid_options}")
 
-    return sort_ip_tokens(valid), inspected, invalid
+    return sorted(valid, key=ip_token_sort_key), inspected, invalid
 
 
 def parse_ip_list(
@@ -300,7 +295,7 @@ def parse_ip_list(
         if max_destinations is not None and len(valid) > max_destinations:
             raise InvalidFeedError(f"Validated destination count exceeds configured safety ceiling {max_destinations}")
 
-    ordered = sorted(valid, key=_ip_token_sort_key)
+    ordered = sorted(valid, key=ip_token_sort_key)
     return ordered, raw_lines, invalid
 
 

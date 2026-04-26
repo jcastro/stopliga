@@ -736,12 +736,6 @@ class OmadaRouterDriver(RouterDriver):
         if mutation.action == "restore" and mutation.payload is not None:
             client.update_group(site_id, mutation.group_id, mutation.payload)
 
-    def _group_restore_payload(self, record: dict[str, Any]) -> dict[str, Any]:
-        name = _normalize_text(record.get("name"))
-        if name is None:
-            raise RemoteRequestError("Omada IP Group no longer exposes its name for rollback")
-        return _group_payload(name, _group_destinations(record))
-
     def _summary(
         self,
         *,
@@ -787,6 +781,7 @@ class OmadaRouterDriver(RouterDriver):
             group_id: group for group in all_groups if (group_id := _normalize_text(group.get("groupId"))) is not None
         }
         managed_groups = self._build_managed_groups_by_name(all_groups)
+        managed_group_destinations = {name: _group_destinations(group) for name, group in managed_groups.items()}
         routes = client.list_policy_routes(site.site_id)
         route_record = self._find_route(routes)
         current_destinations = _flatten_route_destinations(route_record, groups_by_id)
@@ -893,7 +888,7 @@ class OmadaRouterDriver(RouterDriver):
                 group_changes_needed = True
                 continue
             reusable_group_ids.append(_normalize_text(existing_group.get("groupId")) or "")
-            if _group_destinations(existing_group) != list(chunk):
+            if managed_group_destinations.get(name, []) != chunk:
                 group_changes_needed = True
 
         desired_group_name_set = set(desired_group_names)
@@ -988,12 +983,13 @@ class OmadaRouterDriver(RouterDriver):
                     if group_id is None:
                         raise RemoteRequestError(f"Managed Omada IP Group {name!r} does not expose groupId")
                     final_destination_ids.append(group_id)
-                    if _group_destinations(existing_group) == list(chunk):
+                    existing_destinations = managed_group_destinations.get(name, [])
+                    if existing_destinations == chunk:
                         continue
                     current_stage = "group-update"
                     client.update_group(site.site_id, group_id, payload)
                     group_mutations.append(
-                        GroupMutation("restore", group_id, self._group_restore_payload(existing_group))
+                        GroupMutation("restore", group_id, _group_payload(name, existing_destinations))
                     )
                     completed_stages.append(f"group-update:{name}")
                     continue

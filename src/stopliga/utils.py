@@ -38,21 +38,37 @@ def canonicalize_ip_token(value: str) -> str:
     return str(ipaddress.ip_address(token))
 
 
+def ip_token_sort_key(token: str) -> tuple[int, int, int, int]:
+    """Return the deterministic ordering key for a canonical IP/CIDR token."""
+
+    if "/" in token:
+        network = ipaddress.ip_network(token, strict=False)
+        return (network.version, int(network.network_address), network.prefixlen, 1)
+    address = ipaddress.ip_address(token)
+    return (address.version, int(address), address.max_prefixlen, 0)
+
+
+def _canonicalize_ip_token_with_key(value: str) -> tuple[str, tuple[int, int, int, int]]:
+    token = value.strip()
+    if not token:
+        raise ValueError("empty token")
+    if "/" in token:
+        network = ipaddress.ip_network(token, strict=False)
+        return str(network), (network.version, int(network.network_address), network.prefixlen, 1)
+    address = ipaddress.ip_address(token)
+    return str(address), (address.version, int(address), address.max_prefixlen, 0)
+
+
 def sort_ip_tokens(values: Iterable[str]) -> list[str]:
     """Deduplicate and sort IP/CIDR tokens in a deterministic order."""
 
-    unique = {canonicalize_ip_token(value) for value in values if value and value.strip()}
-
-    def sort_key(token: str) -> tuple[int, int, int, int]:
-        network = ipaddress.ip_network(token, strict=False)
-        return (
-            network.version,
-            int(network.network_address),
-            network.prefixlen,
-            0 if "/" not in token else 1,
-        )
-
-    return sorted(unique, key=sort_key)
+    keyed_tokens: dict[str, tuple[int, int, int, int]] = {}
+    for value in values:
+        if not value or not value.strip():
+            continue
+        token, key = _canonicalize_ip_token_with_key(value)
+        keyed_tokens.setdefault(token, key)
+    return sorted(keyed_tokens, key=keyed_tokens.__getitem__)
 
 
 def make_ssl_context(*, verify: bool, ca_file: Path | None = None) -> ssl.SSLContext:

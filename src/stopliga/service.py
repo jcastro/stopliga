@@ -279,7 +279,9 @@ class StopLigaService:
     @staticmethod
     def _requires_reconciliation(exc: StopLigaError, *, reconciliation_pending: bool) -> bool:
         return reconciliation_pending or (
-            isinstance(exc, PartialUpdateError) and (not exc.rollback_attempted or not exc.rollback_completed)
+            isinstance(exc, PartialUpdateError)
+            and bool(exc.completed_stages)
+            and (not exc.rollback_attempted or not exc.rollback_completed)
         )
 
     def run_once(self) -> SyncResult:
@@ -299,6 +301,18 @@ class StopLigaService:
             try:
                 previous_runtime_state = self._load_runtime_state()
                 reconciliation_pending = bool(previous_runtime_state.get("reconciliation_required"))
+                if (
+                    reconciliation_pending
+                    and not previous_runtime_state.get("partial_failure")
+                    and previous_runtime_state.get("last_error_stage") is None
+                ):
+                    log_event(
+                        self.logger,
+                        logging.WARNING,
+                        "reconciliation_state_ignored",
+                        reason="no_partial_failure_details",
+                    )
+                    reconciliation_pending = False
                 if reconciliation_pending:
                     log_event(
                         self.logger,
@@ -356,6 +370,8 @@ class StopLigaService:
                 )
                 return result
             except StopLigaError as exc:
+                if isinstance(exc, ReconciliationRequiredError):
+                    raise
                 try:
                     self._write_state(
                         status="error",

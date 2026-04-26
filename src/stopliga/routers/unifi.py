@@ -962,11 +962,16 @@ class BaseRouteBackend:
     def build_plan(
         self, endpoint: str, route_record: dict[str, Any], desired_ips: Sequence[str], desired_enabled: bool
     ) -> UpdatePlan:
+        destination_path = self._resolve_destination_path(route_record, allow_missing=False)
         route_payload_raw, current_destinations, route_changed_fields = self._build_route_payload_for_destinations(
             route_record,
             desired_ips,
             allow_missing=False,
         )
+        preserve_destinations = not desired_enabled and not desired_ips
+        if preserve_destinations:
+            route_payload_raw = build_route_update_template(route_record)
+            route_changed_fields = []
         route_payload: dict[str, Any] | None = route_payload_raw
         linked_list_id = self._detect_linked_list_id(route_record)
         linked_list_endpoint = None
@@ -974,7 +979,7 @@ class BaseRouteBackend:
         linked_list_current_destinations: list[str] = []
         linked_list_changed_fields: list[str] = []
 
-        if self._resolve_destination_path(route_record, allow_missing=False) == "linked_list.items":
+        if destination_path == "linked_list.items":
             if not linked_list_id:
                 raise UnsupportedRouteShapeError("Route indicates linked_list.items but no linked list ID was found")
             (
@@ -985,6 +990,10 @@ class BaseRouteBackend:
             ) = self.linked_lists.build_update(linked_list_id, desired_ips)
             current_destinations = linked_list_current_destinations
             route_changed_fields = []
+            if preserve_destinations:
+                linked_list_endpoint = None
+                linked_list_payload = None
+                linked_list_changed_fields = []
 
         current_enabled = route_record.get("enabled") if isinstance(route_record.get("enabled"), bool) else None
         if current_enabled != desired_enabled:
@@ -1020,6 +1029,9 @@ class BaseRouteBackend:
         current_enabled = route_record.get("enabled")
         if current_enabled is not None and current_enabled != desired_enabled:
             raise RemoteRequestError(f"Route {route_label(route_record)!r} did not keep enabled={desired_enabled}")
+
+        if not desired_enabled and not desired_ips:
+            return
 
         if self._resolve_destination_path(route_record, allow_missing=False) == "linked_list.items":
             linked_list_id = self._detect_linked_list_id(route_record)
@@ -1355,7 +1367,11 @@ class UniFiRouterDriver(RouterDriver):
         bootstrap_network_id: str | None,
         bootstrap_target_macs: tuple[str, ...],
     ) -> SyncResult:
-        added, removed = compute_destination_delta(plan.current_destinations, plan.desired_destinations)
+        if not feed_snapshot.desired_enabled and not feed_snapshot.destinations:
+            added: list[str] = []
+            removed: list[str] = []
+        else:
+            added, removed = compute_destination_delta(plan.current_destinations, plan.desired_destinations)
         return SyncResult(
             mode="local",
             route_name=self.config.route_name,
@@ -1551,6 +1567,33 @@ class UniFiRouterDriver(RouterDriver):
                 client, site_context, self.config.route_name
             )
         except RouteNotFoundError:
+            if not feed_snapshot.desired_enabled and not feed_snapshot.destinations:
+                log_event(
+                    self.logger,
+                    logging.INFO,
+                    "route_missing_noop",
+                    route=self.config.route_name,
+                    reason="no_active_destinations",
+                    dry_run=self.config.dry_run,
+                )
+                return SyncResult(
+                    mode="local",
+                    route_name=self.config.route_name,
+                    route_id=None,
+                    backend_name="unifi",
+                    changed=False,
+                    created=False,
+                    dry_run=self.config.dry_run,
+                    desired_enabled=False,
+                    current_enabled=None,
+                    desired_destinations=0,
+                    current_destinations=0,
+                    invalid_entries=feed_snapshot.invalid_count,
+                    feed_hash=feed_snapshot.feed_hash,
+                    destinations_hash=feed_snapshot.destinations_hash,
+                    summary="route missing; no active destinations",
+                    is_blocked=feed_snapshot.is_blocked,
+                )
             bootstrap_backend, preview = self._bootstrap_route(client, feed_snapshot.destinations)
             log_event(
                 self.logger,

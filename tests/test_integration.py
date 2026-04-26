@@ -667,6 +667,85 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertEqual(state.route["target_devices"], [{"type": "ALL_CLIENTS"}])
             self.assertEqual(result.bootstrap_source, "vpn:Mullvad DE:all-clients")
 
+    def test_unifi_missing_route_with_no_active_hayahora_destinations_is_noop(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": False},
+            ip_lines=["198.51.100.99"],
+            route=None,
+            networks=[],
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                hayahora_isp="DIGI",
+            )
+            result = StopLigaService(config).run_once()
+
+            self.assertFalse(result.changed)
+            self.assertFalse(result.created)
+            self.assertFalse(result.desired_enabled)
+            self.assertEqual(result.desired_destinations, 0)
+            self.assertIsNone(state.route)
+            self.assertNotIn(
+                f"POST /proxy/network/v2/api/site/{state.network_site_name}/trafficroutes", state.request_log
+            )
+            state_payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state_payload["status"], "success")
+            self.assertFalse(state_payload["reconciliation_required"])
+
+    def test_unifi_disabled_empty_hayahora_feed_keeps_existing_route_destinations(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": False},
+            ip_lines=["198.51.100.99"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": True,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
+            },
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                hayahora_isp="DIGI",
+            )
+            result = StopLigaService(config).run_once()
+
+            self.assertTrue(result.changed)
+            self.assertFalse(result.desired_enabled)
+            self.assertEqual(result.desired_destinations, 0)
+            self.assertEqual(result.current_destinations, 1)
+            self.assertEqual(result.removed_destinations, 0)
+            self.assertFalse(state.route["enabled"])
+            self.assertEqual(state.route["ip_addresses"], [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}])
+            route_updates = [
+                payload
+                for path, payload in state.request_bodies
+                if path == f"/proxy/network/v2/api/site/{state.network_site_name}/trafficroutes/route-1"
+            ]
+            self.assertEqual(len(route_updates), 1)
+            self.assertFalse(route_updates[0]["enabled"])
+            self.assertEqual(route_updates[0]["ip_addresses"], [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}])
+            state_payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state_payload["status"], "success")
+            self.assertFalse(state_payload["reconciliation_required"])
+
     def test_create_route_from_first_available_vpn_with_any_source(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": True},
@@ -967,7 +1046,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertTrue(result.changed)
             self.assertTrue(state.route["enabled"])
 
-    def test_bootstrap_does_not_relist_routes_after_create(self) -> None:
+    def test_inactive_missing_route_does_not_bootstrap_or_relist_after_lookup(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": False},
             ip_lines=["192.0.2.10"],
@@ -988,11 +1067,11 @@ class ServiceIntegrationTests(unittest.TestCase):
                 ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
             )
             result = StopLigaService(config).run_once()
-            self.assertTrue(result.created)
-            self.assertEqual(result.route_id, "created-1")
+            self.assertFalse(result.created)
+            self.assertIsNone(result.route_id)
             self.assertEqual(
                 state.request_log.count(f"GET /proxy/network/v2/api/site/{state.network_site_name}/trafficroutes"),
-                2,
+                1,
             )
 
     def test_bootstrap_guard_is_persisted_before_state_write(self) -> None:
@@ -1202,6 +1281,37 @@ class ServiceIntegrationTests(unittest.TestCase):
             state_payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
             self.assertTrue(state_payload["reconciliation_required"])
 
+    def test_failed_update_before_any_completed_step_does_not_require_reconciliation(self) -> None:
+        state = FakeState(
+            status_payload={"blocked": True},
+            ip_lines=["192.0.2.10"],
+            fail_route_update=True,
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": False,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
+            },
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+            )
+            with self.assertRaises(PartialUpdateError) as ctx:
+                StopLigaService(config).run_once()
+            self.assertEqual(ctx.exception.completed_stages, ())
+            state_payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
+            self.assertFalse(state_payload["reconciliation_required"])
+
     def test_reconciliation_required_state_blocks_future_writes(self) -> None:
         state = FakeState(
             status_payload={"blocked": False},
@@ -1241,6 +1351,44 @@ class ServiceIntegrationTests(unittest.TestCase):
             with self.assertRaises(ReconciliationRequiredError):
                 StopLigaService(config).run_once()
             self.assertNotIn("GET /feed/status.json", state.request_log)
+
+    def test_stale_reconciliation_state_without_partial_failure_details_is_ignored(self) -> None:
+        state = FakeState(
+            status_payload={"blocked": False},
+            ip_lines=["198.51.100.99"],
+            route=None,
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            state_path = Path(tmpdir) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "status": "error",
+                        "reconciliation_required": True,
+                        "last_error_stage": None,
+                        "rollback_completed": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                hayahora_isp="DIGI",
+            )
+            result = StopLigaService(config).run_once()
+
+            self.assertFalse(result.changed)
+            self.assertIn("GET /feed/status.json", state.request_log)
+            state_payload = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(state_payload["status"], "success")
+            self.assertFalse(state_payload["reconciliation_required"])
 
     def test_incomplete_route_is_not_enabled_automatically(self) -> None:
         state = FakeState(

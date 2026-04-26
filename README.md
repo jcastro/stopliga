@@ -185,7 +185,7 @@ docker run -d \
   --env-file .env \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/config:/config:ro" \
-  ghcr.io/jcastro/stopliga:0.1.23
+  ghcr.io/jcastro/stopliga:0.1.24
 ```
 
 The `/config` mount is optional.

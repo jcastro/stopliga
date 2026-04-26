@@ -782,14 +782,6 @@ class OmadaRouterDriver(RouterDriver):
         target = self._resolve_target(client, site.site_id)
         source_ids = self._resolve_source_network_ids(client, site.site_id)
         desired_destinations = _collapse_destinations(feed_snapshot.destinations)
-        if not desired_destinations:
-            raise RemoteRequestError("Omada backend requires at least one destination to manage")
-
-        desired_chunks = _chunked(desired_destinations, self.config.omada_group_size)
-        if len(desired_chunks) > OMADA_MAX_GROUPS:
-            raise RemoteRequestError(
-                f"Omada would require {len(desired_chunks)} IP Groups, which exceeds the conservative safety limit of {OMADA_MAX_GROUPS}"
-            )
 
         all_groups = client.list_groups(site.site_id)
         groups_by_id = {
@@ -800,6 +792,96 @@ class OmadaRouterDriver(RouterDriver):
         route_record = self._find_route(routes)
         current_destinations = _flatten_route_destinations(route_record, groups_by_id)
         current_enabled = _route_status(route_record) if route_record is not None else None
+        if not desired_destinations:
+            added_destinations: list[str] = []
+            removed_destinations: list[str] = []
+            summary = self._summary(
+                route_id=_normalize_text(route_record.get("id")) if route_record else None,
+                target=target,
+                desired_enabled=False,
+                desired_destinations=desired_destinations,
+                current_destinations=current_destinations,
+                group_count=len(self._build_managed_groups_by_name(all_groups)),
+            )
+            if route_record is None or current_enabled is False:
+                return SyncResult(
+                    mode="local",
+                    route_name=self.config.route_name,
+                    route_id=_normalize_text(route_record.get("id")) if route_record else None,
+                    backend_name="omada-policy-routing",
+                    changed=False,
+                    created=False,
+                    dry_run=self.config.dry_run,
+                    desired_enabled=False,
+                    current_enabled=current_enabled,
+                    desired_destinations=0,
+                    current_destinations=len(current_destinations),
+                    invalid_entries=feed_snapshot.invalid_count,
+                    feed_hash=feed_snapshot.feed_hash,
+                    destinations_hash=feed_snapshot.destinations_hash,
+                    summary=summary,
+                    is_blocked=feed_snapshot.is_blocked,
+                    added_destinations=0,
+                    removed_destinations=0,
+                )
+            desired_route_payload = _policy_payload_from_route(route_record)
+            desired_route_payload["status"] = False
+            route_changes_needed = self._route_needs_update(route_record, desired_route_payload)
+            if self.config.dry_run:
+                return SyncResult(
+                    mode="local",
+                    route_name=self.config.route_name,
+                    route_id=_normalize_text(route_record.get("id")),
+                    backend_name="omada-policy-routing",
+                    changed=route_changes_needed,
+                    created=False,
+                    dry_run=True,
+                    desired_enabled=False,
+                    current_enabled=current_enabled,
+                    desired_destinations=0,
+                    current_destinations=len(current_destinations),
+                    invalid_entries=feed_snapshot.invalid_count,
+                    feed_hash=feed_snapshot.feed_hash,
+                    destinations_hash=feed_snapshot.destinations_hash,
+                    summary=summary,
+                    is_blocked=feed_snapshot.is_blocked,
+                    added_destinations=len(added_destinations),
+                    removed_destinations=len(removed_destinations),
+                )
+            if route_changes_needed:
+                disabled_route_id = _normalize_text(route_record.get("id"))
+                if disabled_route_id is None:
+                    raise RemoteRequestError("Omada route does not expose an id")
+                client.update_policy_route(site.site_id, disabled_route_id, desired_route_payload)
+                refreshed_route = self._find_route(client.list_policy_routes(site.site_id))
+                if refreshed_route is None or self._route_needs_update(refreshed_route, desired_route_payload):
+                    raise RemoteRequestError(f"Omada route {self.config.route_name!r} was not disabled")
+            return SyncResult(
+                mode="local",
+                route_name=self.config.route_name,
+                route_id=_normalize_text(route_record.get("id")),
+                backend_name="omada-policy-routing",
+                changed=route_changes_needed,
+                created=False,
+                dry_run=False,
+                desired_enabled=False,
+                current_enabled=current_enabled,
+                desired_destinations=0,
+                current_destinations=len(current_destinations),
+                invalid_entries=feed_snapshot.invalid_count,
+                feed_hash=feed_snapshot.feed_hash,
+                destinations_hash=feed_snapshot.destinations_hash,
+                summary=summary,
+                is_blocked=feed_snapshot.is_blocked,
+                added_destinations=len(added_destinations),
+                removed_destinations=len(removed_destinations),
+            )
+
+        desired_chunks = _chunked(desired_destinations, self.config.omada_group_size)
+        if len(desired_chunks) > OMADA_MAX_GROUPS:
+            raise RemoteRequestError(
+                f"Omada would require {len(desired_chunks)} IP Groups, which exceeds the conservative safety limit of {OMADA_MAX_GROUPS}"
+            )
 
         desired_group_names = [self._managed_group_name(index) for index in range(1, len(desired_chunks) + 1)]
         reusable_group_ids: list[str] = []

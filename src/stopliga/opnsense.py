@@ -281,27 +281,30 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
 
     existing_alias = client.search_alias(alias_name)
     alias_created = False
+    alias_ips_changed = False
     current_ips: list[str] = []
 
     if existing_alias is None:
-        log_event(
-            logger,
-            logging.INFO,
-            "opnsense_alias_create",
-            alias=alias_name,
-            dry_run=config.dry_run,
-        )
-        if not config.dry_run:
-            client.create_alias(alias_name, desired_ips)
-            client.reconfigure_alias()
-        alias_created = True
+        if desired_ips:
+            log_event(
+                logger,
+                logging.INFO,
+                "opnsense_alias_create",
+                alias=alias_name,
+                dry_run=config.dry_run,
+            )
+            if not config.dry_run:
+                client.create_alias(alias_name, desired_ips)
+                client.reconfigure_alias()
+            alias_created = True
     else:
         alias_uuid = str(existing_alias.get("uuid", "")).strip()
         if not alias_uuid:
             raise DiscoveryError(f"Alias {alias_name!r} was found but did not include a UUID")
         alias_record = client.get_alias_item(alias_uuid)
         current_ips = parse_alias_content(alias_record)
-        ips_changed = current_ips != desired_ips
+        preserve_alias_content = not desired_enabled and not desired_ips
+        alias_ips_changed = False if preserve_alias_content else current_ips != desired_ips
         log_event(
             logger,
             logging.INFO,
@@ -310,14 +313,33 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
             alias_uuid=alias_uuid,
             current_destinations=len(current_ips),
             desired_destinations=len(desired_ips),
-            ips_changed=ips_changed,
+            ips_changed=alias_ips_changed,
         )
-        if ips_changed and not config.dry_run:
+        if alias_ips_changed and not config.dry_run:
             client.update_alias_content(alias_uuid, alias_name, desired_ips)
             client.reconfigure_alias()
 
     rule_record = client.search_rule(rule_description)
     if rule_record is None:
+        if not desired_enabled and not desired_ips:
+            return SyncResult(
+                mode="opnsense",
+                route_name=config.route_name,
+                route_id=None,
+                backend_name="opnsense-alias+rule",
+                changed=alias_created,
+                created=alias_created,
+                dry_run=config.dry_run,
+                desired_enabled=False,
+                current_enabled=None,
+                desired_destinations=0,
+                current_destinations=len(current_ips),
+                invalid_entries=feed_snapshot.invalid_count,
+                feed_hash=feed_snapshot.feed_hash,
+                destinations_hash=feed_snapshot.destinations_hash,
+                summary=f"alias={alias_name} rule={rule_description!r} enabled=False ips=0 added=0 removed=0",
+                is_blocked=feed_snapshot.is_blocked,
+            )
         raise DiscoveryError(
             f"Firewall rule {rule_description!r} not found in OPNsense. "
             "Create it in Firewall > Rules [new] (or Firewall > Automation > Filter) "
@@ -345,11 +367,15 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
         client.toggle_rule(rule_uuid, desired_enabled)
         client.apply_filter()
 
-    desired_ip_set = set(desired_ips)
-    current_ip_set = set(current_ips)
-    added = len(desired_ip_set - current_ip_set)
-    removed = len(current_ip_set - desired_ip_set)
-    changed = alias_created or current_ips != desired_ips or rule_changed
+    if not desired_enabled and not desired_ips:
+        added = 0
+        removed = 0
+    else:
+        desired_ip_set = set(desired_ips)
+        current_ip_set = set(current_ips)
+        added = len(desired_ip_set - current_ip_set)
+        removed = len(current_ip_set - desired_ip_set)
+    changed = alias_created or alias_ips_changed or rule_changed
 
     return SyncResult(
         mode="opnsense",

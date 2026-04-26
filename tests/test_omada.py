@@ -374,6 +374,84 @@ class OmadaIntegrationTests(unittest.TestCase):
         self.assertEqual(route["destinationIds"], [state.groups[0]["groupId"]])
         self.assertEqual(route["protocols"], [256])
 
+    def test_omada_missing_route_with_empty_inactive_feed_is_noop(self) -> None:
+        state = FakeOmadaState(
+            status_payload={
+                "lastChangeAt": "2026-04-21 12:00:00",
+                "lastChangeEpoch": 1776772800,
+                "isBlocked": False,
+                "state": "inactive",
+            },
+            ip_lines=["1.1.1.0/24"],
+            wireguards=[{"id": "wg-1", "name": "WG Main", "status": True}],
+        )
+        with OmadaServer(state) as server, tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_config(tmpdir, server)
+            result = StopLigaService(config).run_once()
+
+        self.assertFalse(result.changed)
+        self.assertFalse(result.created)
+        self.assertFalse(result.desired_enabled)
+        self.assertEqual(result.desired_destinations, 0)
+        self.assertEqual(state.groups, [])
+        self.assertEqual(state.policy_routes, [])
+        self.assertNotIn(
+            "POST /openapi/v1/omadac-id/sites/site-1/routing/policy-routings",
+            state.request_log,
+        )
+
+    def test_omada_empty_inactive_feed_disables_route_without_clearing_groups(self) -> None:
+        state = FakeOmadaState(
+            status_payload={
+                "lastChangeAt": "2026-04-21 12:00:00",
+                "lastChangeEpoch": 1776772800,
+                "isBlocked": False,
+                "state": "inactive",
+            },
+            ip_lines=["1.1.1.0/24"],
+            wireguards=[{"id": "wg-1", "name": "WG Main", "status": True}],
+            groups=[
+                {
+                    "groupId": "group-1",
+                    "name": "StopLiga [001]",
+                    "type": 0,
+                    "ipList": [{"ip": "203.0.113.0", "mask": 24}],
+                }
+            ],
+            policy_routes=[
+                {
+                    "id": "route-1",
+                    "name": "StopLiga",
+                    "status": True,
+                    "protocols": [256],
+                    "backupInterface": False,
+                    "sourceType": 0,
+                    "sourceIds": ["lan-1"],
+                    "destinationType": 1,
+                    "destinationIds": ["group-1"],
+                    "interfaceType": 4,
+                    "vpnIds": ["wg-1"],
+                }
+            ],
+        )
+        with OmadaServer(state) as server, tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_config(tmpdir, server)
+            result = StopLigaService(config).run_once()
+
+        self.assertTrue(result.changed)
+        self.assertFalse(result.created)
+        self.assertFalse(result.desired_enabled)
+        self.assertEqual(result.desired_destinations, 0)
+        self.assertEqual(result.current_destinations, 1)
+        self.assertEqual(result.removed_destinations, 0)
+        self.assertFalse(state.policy_routes[0]["status"])
+        self.assertEqual(state.policy_routes[0]["destinationIds"], ["group-1"])
+        self.assertEqual(state.groups[0]["ipList"], [{"ip": "203.0.113.0", "mask": 24}])
+        self.assertNotIn(
+            "DELETE /openapi/v1/omadac-id/sites/site-1/profiles/groups/0/group-1",
+            state.request_log,
+        )
+
     def test_omada_sync_updates_existing_groups_and_cleans_extra_managed_group(self) -> None:
         state = FakeOmadaState(
             status_payload={

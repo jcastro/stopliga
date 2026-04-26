@@ -1874,7 +1874,7 @@ class OPNsenseTests(unittest.TestCase):
         is_blocked: bool = True,
         destinations: list[str] | None = None,
     ) -> FeedSnapshot:
-        values = destinations or ["192.0.2.10", "198.51.100.0/24"]
+        values = destinations if destinations is not None else ["192.0.2.10", "198.51.100.0/24"]
         return FeedSnapshot(
             is_blocked=is_blocked,
             desired_enabled=is_blocked,
@@ -1976,6 +1976,60 @@ class OPNsenseTests(unittest.TestCase):
         reconfigure_alias.assert_called_once_with()
         toggle_rule.assert_called_once_with("rule-1", True)
         apply_filter.assert_called_once_with()
+
+    def test_sync_opnsense_empty_inactive_feed_disables_rule_without_clearing_alias(self) -> None:
+        config = self.make_opnsense_config()
+        feed_snapshot = self.make_feed_snapshot(is_blocked=False, destinations=[])
+        alias_record = {
+            "content": {
+                "203.0.113.0/24": {"value": "203.0.113.0/24", "selected": 1},
+            }
+        }
+
+        with (
+            patch("stopliga.opnsense.OPNsenseClient.authenticate", return_value=None),
+            patch("stopliga.opnsense.OPNsenseClient.search_alias", return_value={"uuid": "alias-1"}),
+            patch("stopliga.opnsense.OPNsenseClient.get_alias_item", return_value=alias_record),
+            patch("stopliga.opnsense.OPNsenseClient.search_rule", return_value={"uuid": "rule-1", "enabled": "1"}),
+            patch("stopliga.opnsense.OPNsenseClient.update_alias_content") as update_alias_content,
+            patch("stopliga.opnsense.OPNsenseClient.reconfigure_alias") as reconfigure_alias,
+            patch("stopliga.opnsense.OPNsenseClient.toggle_rule") as toggle_rule,
+            patch("stopliga.opnsense.OPNsenseClient.apply_filter") as apply_filter,
+        ):
+            result = sync_opnsense(config, feed_snapshot)
+
+        self.assertTrue(result.changed)
+        self.assertFalse(result.created)
+        self.assertFalse(result.desired_enabled)
+        self.assertEqual(result.desired_destinations, 0)
+        self.assertEqual(result.current_destinations, 1)
+        self.assertEqual(result.added_destinations, 0)
+        self.assertEqual(result.removed_destinations, 0)
+        update_alias_content.assert_not_called()
+        reconfigure_alias.assert_not_called()
+        toggle_rule.assert_called_once_with("rule-1", False)
+        apply_filter.assert_called_once_with()
+
+    def test_sync_opnsense_empty_inactive_feed_missing_alias_and_rule_is_noop(self) -> None:
+        config = self.make_opnsense_config()
+        feed_snapshot = self.make_feed_snapshot(is_blocked=False, destinations=[])
+
+        with (
+            patch("stopliga.opnsense.OPNsenseClient.authenticate", return_value=None),
+            patch("stopliga.opnsense.OPNsenseClient.search_alias", return_value=None),
+            patch("stopliga.opnsense.OPNsenseClient.create_alias") as create_alias,
+            patch("stopliga.opnsense.OPNsenseClient.reconfigure_alias") as reconfigure_alias,
+            patch("stopliga.opnsense.OPNsenseClient.search_rule", return_value=None),
+        ):
+            result = sync_opnsense(config, feed_snapshot)
+
+        self.assertFalse(result.changed)
+        self.assertFalse(result.created)
+        self.assertFalse(result.desired_enabled)
+        self.assertEqual(result.desired_destinations, 0)
+        self.assertEqual(result.current_destinations, 0)
+        create_alias.assert_not_called()
+        reconfigure_alias.assert_not_called()
 
     def test_sync_opnsense_reports_rules_new_requirement_when_rule_is_missing(self) -> None:
         config = self.make_opnsense_config(route_name="StopLiga")

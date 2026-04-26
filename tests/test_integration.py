@@ -746,6 +746,51 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertEqual(state_payload["status"], "success")
             self.assertFalse(state_payload["reconciliation_required"])
 
+    def test_unifi_blocked_then_unblocked_flow_enables_then_disables_route(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": True},
+            ip_lines=["192.0.2.10", "198.51.100.0/24"],
+            route=None,
+            networks=[{"_id": "vpn-network-1", "name": "Mullvad DE", "purpose": "vpn-client"}],
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+            )
+
+            blocked_result = StopLigaService(config).run_once()
+            self.assertTrue(blocked_result.created)
+            self.assertTrue(blocked_result.desired_enabled)
+            self.assertIsNotNone(state.route)
+            self.assertTrue(state.route["enabled"])
+            self.assertEqual(
+                [item["ip_or_subnet"] for item in state.route["ip_addresses"]],
+                ["192.0.2.10", "198.51.100.0/24"],
+            )
+
+            state.status_payload = {"lastUpdate": "2026-04-23 09:21:40", "data": []}
+            unblocked_result = StopLigaService(config).run_once()
+
+            self.assertTrue(unblocked_result.changed)
+            self.assertFalse(unblocked_result.created)
+            self.assertFalse(unblocked_result.desired_enabled)
+            self.assertEqual(unblocked_result.desired_destinations, 0)
+            self.assertFalse(state.route["enabled"])
+            self.assertEqual(
+                [item["ip_or_subnet"] for item in state.route["ip_addresses"]],
+                ["192.0.2.10", "198.51.100.0/24"],
+            )
+            state_payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
+            self.assertFalse(state_payload["last_is_blocked"])
+            self.assertFalse(state_payload["reconciliation_required"])
+
     def test_create_route_from_first_available_vpn_with_any_source(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": True},
@@ -2030,6 +2075,72 @@ class OPNsenseTests(unittest.TestCase):
         self.assertEqual(result.current_destinations, 0)
         create_alias.assert_not_called()
         reconfigure_alias.assert_not_called()
+
+    def test_sync_opnsense_blocked_then_unblocked_flow_updates_alias_then_disables_rule(self) -> None:
+        config = self.make_opnsense_config()
+        state = {
+            "alias": {"uuid": "alias-1", "content": {}},
+            "rule": {"uuid": "rule-1", "enabled": "0"},
+            "calls": [],
+        }
+
+        class FakeOPNsenseClient:
+            def __init__(self, config: Config):
+                del config
+
+            def authenticate(self) -> None:
+                state["calls"].append(("authenticate",))
+
+            def search_alias(self, name: str) -> dict[str, Any] | None:
+                state["calls"].append(("search_alias", name))
+                return {"uuid": state["alias"]["uuid"]}
+
+            def get_alias_item(self, uuid: str) -> dict[str, Any]:
+                state["calls"].append(("get_alias_item", uuid))
+                return state["alias"]
+
+            def update_alias_content(self, uuid: str, name: str, content: list[str]) -> None:
+                state["calls"].append(("update_alias_content", uuid, name, tuple(content)))
+                state["alias"] = {
+                    "uuid": uuid,
+                    "content": {value: {"value": value, "selected": 1} for value in content},
+                }
+
+            def reconfigure_alias(self) -> None:
+                state["calls"].append(("reconfigure_alias",))
+
+            def search_rule(self, description: str) -> dict[str, Any] | None:
+                state["calls"].append(("search_rule", description))
+                return state["rule"]
+
+            def toggle_rule(self, uuid: str, enabled: bool) -> None:
+                state["calls"].append(("toggle_rule", uuid, enabled))
+                state["rule"] = {"uuid": uuid, "enabled": "1" if enabled else "0"}
+
+            def apply_filter(self) -> None:
+                state["calls"].append(("apply_filter",))
+
+        with patch("stopliga.opnsense.OPNsenseClient", FakeOPNsenseClient):
+            blocked_result = sync_opnsense(config, self.make_feed_snapshot())
+            self.assertEqual(state["rule"], {"uuid": "rule-1", "enabled": "1"})
+            unblocked_result = sync_opnsense(config, self.make_feed_snapshot(is_blocked=False, destinations=[]))
+
+        self.assertTrue(blocked_result.changed)
+        self.assertTrue(blocked_result.desired_enabled)
+        self.assertEqual(blocked_result.added_destinations, 2)
+        self.assertEqual(state["rule"], {"uuid": "rule-1", "enabled": "0"})
+        self.assertTrue(unblocked_result.changed)
+        self.assertFalse(unblocked_result.desired_enabled)
+        self.assertEqual(unblocked_result.desired_destinations, 0)
+        self.assertEqual(unblocked_result.current_destinations, 2)
+        self.assertEqual(unblocked_result.removed_destinations, 0)
+        self.assertIn(("update_alias_content", "alias-1", "LaLiga", ("192.0.2.10", "198.51.100.0/24")), state["calls"])
+        self.assertIn(("toggle_rule", "rule-1", True), state["calls"])
+        self.assertIn(("toggle_rule", "rule-1", False), state["calls"])
+        self.assertEqual(
+            parse_alias_content(state["alias"]),
+            ["192.0.2.10", "198.51.100.0/24"],
+        )
 
     def test_sync_opnsense_reports_rules_new_requirement_when_rule_is_missing(self) -> None:
         config = self.make_opnsense_config(route_name="StopLiga")

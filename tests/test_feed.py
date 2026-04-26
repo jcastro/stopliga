@@ -533,6 +533,49 @@ class FeedLoadingTests(unittest.TestCase):
         self.assertEqual(loads_calls, 1)
         self.assertEqual(snapshot.destinations, ["188.114.96.5"])
 
+    def test_load_feed_snapshot_handles_blocked_then_unblocked_payloads(self) -> None:
+        config = Config(retries=1)
+        blocked_payload = """
+            {
+              "lastUpdate": "2026-04-23 09:16:40",
+              "data": [
+                {
+                  "ip": "188.114.96.5",
+                  "description": "Cloudflare",
+                  "isp": "DIGI",
+                  "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
+                }
+              ]
+            }
+            """
+        unblocked_payload = """
+            {
+              "lastUpdate": "2026-04-23 09:21:40",
+              "data": [
+                {
+                  "ip": "188.114.96.5",
+                  "description": "Cloudflare",
+                  "isp": "DIGI",
+                  "stateChanges": [
+                    {"timestamp": "2026-04-23 09:00:00Z", "state": true},
+                    {"timestamp": "2026-04-23 09:20:00Z", "state": false}
+                  ]
+                }
+              ]
+            }
+            """
+
+        with patch("stopliga.feed.fetch_text", side_effect=[blocked_payload, unblocked_payload]):
+            blocked_snapshot = load_feed_snapshot(config)
+            unblocked_snapshot = load_feed_snapshot(config)
+
+        self.assertTrue(blocked_snapshot.is_blocked)
+        self.assertTrue(blocked_snapshot.desired_enabled)
+        self.assertEqual(blocked_snapshot.destinations, ["188.114.96.5"])
+        self.assertFalse(unblocked_snapshot.is_blocked)
+        self.assertFalse(unblocked_snapshot.desired_enabled)
+        self.assertEqual(unblocked_snapshot.destinations, [])
+
     def test_load_feed_snapshot_active_mode_uses_all_isps_when_filter_is_absent(self) -> None:
         config = Config(retries=1)
 

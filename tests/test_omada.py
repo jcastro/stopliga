@@ -454,6 +454,47 @@ class OmadaIntegrationTests(unittest.TestCase):
             state.request_log,
         )
 
+    def test_omada_blocked_then_unblocked_flow_creates_then_disables_route(self) -> None:
+        state = FakeOmadaState(
+            status_payload={
+                "lastChangeAt": "2026-04-21 12:00:00",
+                "lastChangeEpoch": 1776772800,
+                "isBlocked": True,
+                "state": "blocked",
+            },
+            ip_lines=["1.1.1.0/24", "2.2.2.0/24"],
+            wireguards=[{"id": "wg-1", "name": "WG Main", "status": True}],
+            lan_networks=[{"id": "lan-1", "name": "LAN"}],
+        )
+        with OmadaServer(state) as server, tempfile.TemporaryDirectory() as tmpdir:
+            config = self._build_config(tmpdir, server)
+
+            blocked_result = StopLigaService(config).run_once()
+            self.assertTrue(blocked_result.created)
+            self.assertTrue(blocked_result.desired_enabled)
+            self.assertEqual(len(state.groups), 1)
+            self.assertEqual(len(state.policy_routes), 1)
+            self.assertTrue(state.policy_routes[0]["status"])
+            self.assertEqual(
+                state.groups[0]["ipList"],
+                [{"ip": "1.1.1.0", "mask": 24}, {"ip": "2.2.2.0", "mask": 24}],
+            )
+
+            state.status_payload = {"lastUpdate": "2026-04-23 09:21:40", "data": []}
+            unblocked_result = StopLigaService(config).run_once()
+
+            self.assertTrue(unblocked_result.changed)
+            self.assertFalse(unblocked_result.created)
+            self.assertFalse(unblocked_result.desired_enabled)
+            self.assertEqual(unblocked_result.desired_destinations, 0)
+            self.assertEqual(unblocked_result.current_destinations, 2)
+            self.assertFalse(state.policy_routes[0]["status"])
+            self.assertEqual(state.policy_routes[0]["destinationIds"], [state.groups[0]["groupId"]])
+            self.assertEqual(
+                state.groups[0]["ipList"],
+                [{"ip": "1.1.1.0", "mask": 24}, {"ip": "2.2.2.0", "mask": 24}],
+            )
+
     def test_omada_sync_updates_existing_groups_and_cleans_extra_managed_group(self) -> None:
         state = FakeOmadaState(
             status_payload={

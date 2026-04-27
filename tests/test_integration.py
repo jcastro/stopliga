@@ -65,6 +65,7 @@ class FakeState:
     linked_list_update_calls: int = 0
     fail_linked_list_update_on_calls: tuple[int, ...] = ()
     gotify_messages: list[dict[str, Any]] = field(default_factory=list)
+    ntfy_messages: list[dict[str, Any]] = field(default_factory=list)
     telegram_messages: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -111,6 +112,13 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b"{}"
         payload = json.loads(raw.decode("utf-8"))
         self.state.request_bodies.append((self.path, clone(payload)))
+        return payload
+
+    def _read_text(self) -> str:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b""
+        payload = raw.decode("utf-8")
+        self.state.request_bodies.append((self.path, {"text": payload}))
         return payload
 
     def _send_json(self, status: int, payload: Any, *, headers: dict[str, str] | None = None) -> None:
@@ -169,6 +177,20 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
             payload = self._read_json()
             self.state.gotify_messages.append(payload)
             self._send_json(200, {"id": len(self.state.gotify_messages)})
+            return
+
+        if path.startswith("/ntfy/"):
+            payload = self._read_text()
+            self.state.ntfy_messages.append(
+                {
+                    "path": path,
+                    "body": payload,
+                    "title": self.headers.get("Title"),
+                    "priority": self.headers.get("Priority"),
+                    "authorization": self.headers.get("Authorization"),
+                }
+            )
+            self._send_json(200, {"id": f"ntfy-{len(self.state.ntfy_messages)}"})
             return
 
         if path.startswith("/telegram/bot") and path.endswith("/sendMessage"):
@@ -1513,6 +1535,47 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertIn("Blocking: ACTIVE", state.gotify_messages[0]["message"])
             self.assertIn("Destination scope: ISP: DIGI / last 24h", state.gotify_messages[0]["message"])
 
+    def test_ntfy_notification_is_sent_for_block_change(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": True},
+            ip_lines=["192.0.2.10", "198.51.100.0/24"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": False,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "203.0.113.0/24", "ip_version": "IPv4"}],
+            },
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            state_path = Path(tmpdir) / "state.json"
+            state_path.write_text(json.dumps({"last_is_blocked": False}), encoding="utf-8")
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                ntfy_url=f"{feed.base_url}/ntfy",
+                ntfy_topic="stopliga-test",
+                ntfy_token="tk_secret",
+                ntfy_priority=4,
+            )
+            StopLigaService(config).run_once()
+
+            self.assertEqual(len(state.ntfy_messages), 1)
+            self.assertEqual(state.ntfy_messages[0]["path"], "/ntfy/stopliga-test")
+            self.assertEqual(state.ntfy_messages[0]["title"], "StopLiga")
+            self.assertEqual(state.ntfy_messages[0]["priority"], "4")
+            self.assertEqual(state.ntfy_messages[0]["authorization"], "Bearer tk_secret")
+            self.assertIn("Route: LaLiga", state.ntfy_messages[0]["body"])
+            self.assertIn("Block status: INACTIVE -> ACTIVE", state.ntfy_messages[0]["body"])
+            self.assertIn("Blocking: ACTIVE", state.ntfy_messages[0]["body"])
+
     def test_telegram_notification_is_sent_for_block_change(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": False},
@@ -1778,6 +1841,38 @@ class ServiceIntegrationTests(unittest.TestCase):
             StopLigaService(config).run_once()
 
             self.assertEqual(state.gotify_messages, [])
+
+    def test_destination_only_change_does_not_send_ntfy_message(self) -> None:
+        state = FakeState(
+            status_payload={"isBlocked": True},
+            ip_lines=["192.0.2.10", "198.51.100.0/24"],
+            route={
+                "_id": "route-1",
+                "name": "LaLiga",
+                "enabled": True,
+                "network_id": "vpn-network-1",
+                "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01", "type": "CLIENT"}],
+                "ip_addresses": [{"ip_or_subnet": "192.0.2.10", "ip_version": "IPv4"}],
+            },
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            TestServer(state, https=True) as unifi,
+            TestServer(state, https=False) as feed,
+        ):
+            state_path = Path(tmpdir) / "state.json"
+            state_path.write_text(json.dumps({"last_is_blocked": True}), encoding="utf-8")
+            config = self.make_config(
+                state_dir=tmpdir,
+                port=int(unifi.base_url.rsplit(":", 1)[1]),
+                status_url=f"{feed.base_url}/feed/status.json",
+                ip_list_url=f"{feed.base_url}/feed/ip_list.txt",
+                ntfy_url=f"{feed.base_url}/ntfy",
+                ntfy_topic="stopliga-test",
+            )
+            StopLigaService(config).run_once()
+
+            self.assertEqual(state.ntfy_messages, [])
 
     def test_notification_error_redacts_telegram_token(self) -> None:
         safe = _safe_notification_url("https://api.telegram.org/bot123456:secret-token/sendMessage")

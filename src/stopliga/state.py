@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import tempfile
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -132,7 +131,7 @@ class StateStore:
 
     def write(self, snapshot: StateSnapshot) -> None:
         ensure_parent_dir(self.path)
-        payload = asdict(snapshot)
+        payload = dict(vars(snapshot))
         temp_name: str | None = None
         try:
             fd, temp_name = tempfile.mkstemp(prefix=f"{self.path.name}.", suffix=".tmp", dir=str(self.path.parent))

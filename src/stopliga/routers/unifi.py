@@ -29,6 +29,7 @@ from ..models import BootstrapPreview, Config, FeedSnapshot, SiteContext, SyncRe
 from ..utils import (
     IpTokenSortKey,
     canonicalize_ip_token_with_key,
+    compact_json_bytes,
     make_ssl_context,
     read_limited,
     shorten_json,
@@ -431,6 +432,7 @@ class UniFiClient:
         self.csrf_token: str | None = None
         self.network_prefix: str | None = None
         self.site_context: SiteContext | None = None
+        self.auth_headers: dict[str, str] | None = None
 
         cookie_jar = http.cookiejar.CookieJar()
         context = make_ssl_context(verify=config.unifi_verify_tls, ca_file=config.unifi_ca_file)
@@ -460,12 +462,13 @@ class UniFiClient:
         if token:
             self.csrf_token = token
 
-    def _build_auth_headers(self) -> dict[str, str]:
-        if not self.config.api_key:
+    @staticmethod
+    def _build_auth_headers(api_key: str | None) -> dict[str, str]:
+        if not api_key:
             raise AuthenticationError("UNIFI_API_KEY is required")
         return {
-            "Authorization": f"Bearer {self.config.api_key}",
-            "X-API-Key": self.config.api_key,
+            "Authorization": f"Bearer {api_key}",
+            "X-API-Key": api_key,
         }
 
     def request(
@@ -482,9 +485,11 @@ class UniFiClient:
 
         method_name = method.upper()
         body_bytes = None
-        headers = {"Accept": "application/json", **self._build_auth_headers()}
+        if self.auth_headers is None:
+            self.auth_headers = self._build_auth_headers(self.config.api_key)
+        headers = {"Accept": "application/json", **self.auth_headers}
         if json_body is not None:
-            body_bytes = json.dumps(json_body).encode("utf-8")
+            body_bytes = compact_json_bytes(json_body)
             headers["Content-Type"] = "application/json"
         if self.csrf_token:
             headers["X-CSRF-Token"] = self.csrf_token

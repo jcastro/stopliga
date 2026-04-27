@@ -30,6 +30,12 @@ def stable_hash(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def compact_json_bytes(value: Any) -> bytes:
+    """Serialize a JSON request payload without whitespace."""
+
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+
+
 def canonicalize_ip_token(value: str) -> str:
     """Normalize a single IPv4/IPv6 address or CIDR to a canonical string."""
 

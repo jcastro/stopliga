@@ -52,3 +52,31 @@ class StateStoreHardeningTests(unittest.TestCase):
             )
 
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_write_persists_tuple_fields_as_json_arrays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.json"
+            store = StateStore(path)
+            store.write(
+                StateSnapshot(
+                    status="guard",
+                    run_mode="once",
+                    route_name="StopLiga",
+                    site="default",
+                    last_attempt_at="2026-04-21T00:00:00+00:00",
+                    last_success_at=None,
+                    last_error=None,
+                    last_mode=None,
+                    last_sync_id=None,
+                    last_route_id=None,
+                    last_backend=None,
+                    feed_hash=None,
+                    destinations_hash=None,
+                    changed=False,
+                    created=False,
+                    dry_run=False,
+                    bootstrap_target_macs=("aa:bb:cc:dd:ee:ff",),
+                )
+            )
+
+            self.assertEqual(store.load()["bootstrap_target_macs"], ["aa:bb:cc:dd:ee:ff"])

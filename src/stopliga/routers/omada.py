@@ -25,7 +25,7 @@ from ..errors import (
 )
 from ..logging_utils import log_event
 from ..models import Config, FeedSnapshot, SyncResult
-from ..utils import make_ssl_context, read_limited, sleep_with_backoff, sort_canonical_ip_tokens
+from ..utils import compact_json_bytes, make_ssl_context, read_limited, sleep_with_backoff, sort_canonical_ip_tokens
 from .base import BootstrapGuardClearer, BootstrapGuardWriter, RouterDriver
 
 
@@ -104,10 +104,12 @@ def _network_sort_key(network: ipaddress.IPv4Network | ipaddress.IPv6Network) ->
 
 
 def _collapse_destinations(destinations: Sequence[str]) -> list[str]:
-    networks = [ipaddress.ip_network(token, strict=False) for token in destinations]
-    if any(network.version != 4 for network in networks):
-        raise UnsupportedRouteShapeError("Omada policy routing currently supports IPv4 destinations only")
-    ipv4_networks = [network for network in networks if isinstance(network, ipaddress.IPv4Network)]
+    ipv4_networks: list[ipaddress.IPv4Network] = []
+    for token in destinations:
+        network = ipaddress.ip_network(token, strict=False)
+        if not isinstance(network, ipaddress.IPv4Network):
+            raise UnsupportedRouteShapeError("Omada policy routing currently supports IPv4 destinations only")
+        ipv4_networks.append(network)
     return [str(network) for network in sorted(ipaddress.collapse_addresses(ipv4_networks), key=_network_sort_key)]
 
 
@@ -231,7 +233,7 @@ class OmadaClient:
             "client_secret": self.config.omada_client_secret,
         }
         url = f"{self.base_url}/openapi/authorize/token?grant_type=client_credentials"
-        body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        body = compact_json_bytes(payload)
         request = urllib.request.Request(
             url,
             data=body,
@@ -280,7 +282,7 @@ class OmadaClient:
             while True:
                 self.authenticate()
                 url = f"{self.base_url}{path}"
-                body = json.dumps(json_body, ensure_ascii=True).encode("utf-8") if json_body is not None else None
+                body = compact_json_bytes(json_body) if json_body is not None else None
                 headers = {
                     "Accept": "application/json",
                     "Authorization": f"AccessToken={self.access_token}",

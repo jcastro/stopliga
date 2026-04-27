@@ -27,7 +27,9 @@ from ..errors import (
 from ..logging_utils import log_event
 from ..models import BootstrapPreview, Config, FeedSnapshot, SiteContext, SyncResult, UpdatePlan
 from ..utils import (
-    canonicalize_ip_token,
+    IpTokenSortKey,
+    canonicalize_ip_token_with_key,
+    compact_json_bytes,
     make_ssl_context,
     read_limited,
     shorten_json,
@@ -213,24 +215,40 @@ def find_matching_routes(routes: Sequence[dict[str, Any]], target_name: str) -> 
 def normalize_ip_objects(entries: Sequence[Any]) -> list[str]:
     """Normalize a route payload list of strings or objects into canonical strings."""
 
-    values: list[str] = []
+    values: dict[str, IpTokenSortKey] = {}
     for entry in entries:
-        if isinstance(entry, str):
-            values.append(canonicalize_ip_token(entry))
+        raw_value = ip_entry_value(entry)
+        if raw_value is not None:
+            token, key = canonicalize_ip_token_with_key(raw_value)
+            values.setdefault(token, key)
             continue
         if isinstance(entry, dict):
-            for key in ("ip_or_subnet", "ip", "value"):
-                value = entry.get(key)
-                if isinstance(value, str):
-                    values.append(canonicalize_ip_token(value))
-                    break
-            else:
-                raise UnsupportedRouteShapeError(
-                    f"Unsupported IP object in route: {json.dumps(entry, ensure_ascii=True, sort_keys=True)}"
-                )
-            continue
+            raise UnsupportedRouteShapeError(
+                f"Unsupported IP object in route: {json.dumps(entry, ensure_ascii=True, sort_keys=True)}"
+            )
         raise UnsupportedRouteShapeError(f"Unsupported IP entry type: {type(entry)!r}")
-    return sort_ip_tokens(values)
+    return sorted(values, key=values.__getitem__)
+
+
+def ip_entry_value(entry: Any) -> str | None:
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        for key in ("ip_or_subnet", "ip", "value"):
+            value = entry.get(key)
+            if isinstance(value, str):
+                return value
+    return None
+
+
+def entries_match_desired_ips(entries: Sequence[Any], desired_ips: Sequence[str]) -> bool:
+    if len(entries) != len(desired_ips):
+        return False
+    for entry, desired_ip in zip(entries, desired_ips, strict=True):
+        raw_value = ip_entry_value(entry)
+        if raw_value is None or raw_value.strip() != desired_ip:
+            return False
+    return True
 
 
 def infer_common_item_fields(entries: Sequence[Any]) -> dict[str, Any]:
@@ -295,17 +313,18 @@ def build_ip_objects(desired: Sequence[str], existing_entries: Sequence[Any]) ->
         if any(key in entry for entry in dict_entries):
             subnet_key = key
             break
+    example_version = None
+    if version_key:
+        for entry in dict_entries:
+            if version_key in entry:
+                example_version = entry[version_key]
+                break
 
     built: list[dict[str, Any]] = []
     for token in desired:
         item = copy.deepcopy(extras)
         item[subnet_key or "ip_or_subnet"] = token
         if version_key:
-            example_version = None
-            for entry in dict_entries:
-                if version_key in entry:
-                    example_version = entry[version_key]
-                    break
             formatted = format_ip_version(example_version, token)
             if formatted is not None:
                 item[version_key] = formatted
@@ -395,6 +414,8 @@ def direct_ip_entries(desired_ips: Sequence[str]) -> list[dict[str, Any]]:
 def compute_destination_delta(current: Sequence[str], desired: Sequence[str]) -> tuple[list[str], list[str]]:
     """Return ordered added/removed IP deltas without repeated linear scans."""
 
+    if current == desired:
+        return [], []
     current_set = set(current)
     desired_set = set(desired)
     added = [token for token in desired if token not in current_set]
@@ -411,6 +432,7 @@ class UniFiClient:
         self.csrf_token: str | None = None
         self.network_prefix: str | None = None
         self.site_context: SiteContext | None = None
+        self.auth_headers: dict[str, str] | None = None
 
         cookie_jar = http.cookiejar.CookieJar()
         context = make_ssl_context(verify=config.unifi_verify_tls, ca_file=config.unifi_ca_file)
@@ -440,12 +462,13 @@ class UniFiClient:
         if token:
             self.csrf_token = token
 
-    def _build_auth_headers(self) -> dict[str, str]:
-        if not self.config.api_key:
+    @staticmethod
+    def _build_auth_headers(api_key: str | None) -> dict[str, str]:
+        if not api_key:
             raise AuthenticationError("UNIFI_API_KEY is required")
         return {
-            "Authorization": f"Bearer {self.config.api_key}",
-            "X-API-Key": self.config.api_key,
+            "Authorization": f"Bearer {api_key}",
+            "X-API-Key": api_key,
         }
 
     def request(
@@ -462,9 +485,11 @@ class UniFiClient:
 
         method_name = method.upper()
         body_bytes = None
-        headers = {"Accept": "application/json", **self._build_auth_headers()}
+        if self.auth_headers is None:
+            self.auth_headers = self._build_auth_headers(self.config.api_key)
+        headers = {"Accept": "application/json", **self.auth_headers}
         if json_body is not None:
-            body_bytes = json.dumps(json_body).encode("utf-8")
+            body_bytes = compact_json_bytes(json_body)
             headers["Content-Type"] = "application/json"
         if self.csrf_token:
             headers["X-CSRF-Token"] = self.csrf_token
@@ -780,7 +805,7 @@ class LinkedTrafficMatchingListHelper:
 
     def build_update(
         self, list_id: str, desired_ips: Sequence[str]
-    ) -> tuple[str, dict[str, Any], list[str], list[str]]:
+    ) -> tuple[str, dict[str, Any] | None, list[str], list[str]]:
         endpoint, current = self.get(list_id)
         list_type = current.get("type")
         current_items = current.get("items")
@@ -791,21 +816,29 @@ class LinkedTrafficMatchingListHelper:
         if not isinstance(current_items, list):
             raise UnsupportedRouteShapeError(f"Linked traffic matching list {list_id} does not expose items[]")
         expected_version = 4 if list_type == "IPV4_ADDRESSES" else 6
+        desired_list = list(desired_ips)
         for token in desired_ips:
             token_version = 6 if ":" in token else 4
             if token_version != expected_version:
                 raise UnsupportedRouteShapeError(
                     f"Linked traffic matching list {list_id} expects IPv{expected_version} entries but received {token!r}"
                 )
-        current_destinations = sort_ip_tokens(str(item) for item in current_items)
+        if entries_match_desired_ips(current_items, desired_list):
+            current_destinations = desired_list
+        else:
+            current_destinations = sort_ip_tokens(str(item) for item in current_items)
         changed_fields: list[str] = []
-        if current_destinations != list(desired_ips):
+        if current_destinations != desired_list:
             changed_fields.append("linked_list.items")
-        payload = {
-            "type": list_type,
-            "name": current.get("name"),
-            "items": list(desired_ips),
-        }
+        payload = (
+            {
+                "type": list_type,
+                "name": current.get("name"),
+                "items": desired_list,
+            }
+            if changed_fields
+            else None
+        )
         return endpoint, payload, current_destinations, changed_fields
 
     def verify(self, list_id: str, desired_ips: Sequence[str]) -> None:
@@ -939,11 +972,10 @@ class BaseRouteBackend:
         desired_ips: Sequence[str],
         *,
         allow_missing: bool,
-    ) -> tuple[dict[str, Any], list[str], list[str]]:
+    ) -> tuple[dict[str, Any] | None, list[str], list[str]]:
         path = self._resolve_destination_path(route_record, allow_missing=allow_missing)
-        payload = build_route_update_template(route_record)
         if path == "linked_list.items":
-            return payload, [], []
+            return None, [], []
 
         existing_entries = get_nested(route_record, path)
         if existing_entries is None:
@@ -951,13 +983,20 @@ class BaseRouteBackend:
         if not isinstance(existing_entries, list):
             raise UnsupportedRouteShapeError(f"Destination field {path!r} is not a list")
 
+        desired_list = list(desired_ips)
+        if entries_match_desired_ips(existing_entries, desired_list):
+            return None, desired_list, []
+
         current_destinations = normalize_ip_objects(existing_entries)
+        if current_destinations == desired_list:
+            return None, current_destinations, []
+
+        payload = build_route_update_template(route_record)
         desired_value = self._build_destination_value(path, existing_entries, desired_ips)
         set_nested(payload, path, desired_value, create_missing=True)
         if path == "ip_addresses" and "matching_target" in payload and not payload.get("matching_target"):
             payload["matching_target"] = "IP"
-        changed_fields = [path] if current_destinations != list(desired_ips) else []
-        return payload, current_destinations, changed_fields
+        return payload, current_destinations, [path]
 
     def build_plan(
         self, endpoint: str, route_record: dict[str, Any], desired_ips: Sequence[str], desired_enabled: bool
@@ -970,7 +1009,7 @@ class BaseRouteBackend:
         )
         preserve_destinations = not desired_enabled and not desired_ips
         if preserve_destinations:
-            route_payload_raw = build_route_update_template(route_record)
+            route_payload_raw = None
             route_changed_fields = []
         route_payload: dict[str, Any] | None = route_payload_raw
         linked_list_id = self._detect_linked_list_id(route_record)
@@ -1021,7 +1060,7 @@ class BaseRouteBackend:
             linked_list_payload=linked_list_payload,
             linked_list_changed_fields=linked_list_changed_fields,
             linked_list_current_destinations=linked_list_current_destinations,
-            raw_route=copy.deepcopy(route_record),
+            raw_route=copy.deepcopy(route_record) if route_payload is not None else None,
         )
 
     def verify(self, route_id_value: str, desired_ips: Sequence[str], desired_enabled: bool) -> None:

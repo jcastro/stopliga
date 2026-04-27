@@ -14,7 +14,7 @@ from urllib.parse import urlparse, urlunparse
 from .errors import NetworkError, NotificationDeliveryError, StopLigaError
 from .logging_utils import log_event
 from .models import Config, SyncResult
-from .utils import make_ssl_context, sleep_with_backoff
+from .utils import compact_json_bytes, make_ssl_context, sleep_with_backoff
 
 DEFAULT_USER_AGENT = "stopliga/0.1.25"
 
@@ -64,7 +64,7 @@ def _post_json(
     verify_tls: bool,
     ca_file,
 ) -> dict[str, Any] | None:
-    body = json.dumps(payload).encode("utf-8")
+    body = compact_json_bytes(payload)
     opener = urllib.request.build_opener(
         urllib.request.HTTPSHandler(context=make_ssl_context(verify=verify_tls, ca_file=ca_file))
     )

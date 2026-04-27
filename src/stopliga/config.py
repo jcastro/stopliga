@@ -633,6 +633,23 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             DEFAULTS.log_level,
         )
     )
+    telegram_chat_id_raw = _first(
+        args.telegram_chat_id,
+        _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"),
+        file_cfg.get("telegram_chat_id"),
+        DEFAULTS.telegram_chat_id,
+    )
+    telegram_group_id_raw = _first(
+        args.telegram_group_id,
+        _env_value(env, "STOPLIGA_TELEGRAM_GROUP_ID"),
+        file_cfg.get("telegram_group_id"),
+        DEFAULTS.telegram_group_id,
+    )
+    telegram_topic_id_raw = _first(
+        args.telegram_topic_id,
+        _env_value(env, "STOPLIGA_TELEGRAM_TOPIC_ID"),
+        file_cfg.get("telegram_topic_id"),
+    )
 
     config = Config(
         run_mode=cast(RunMode, _normalize_run_mode(args, env, file_cfg)),
@@ -989,48 +1006,13 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             file_cfg.get("telegram_bot_token"),
             DEFAULTS.telegram_bot_token,
         ),
-        telegram_chat_id=str(
-            _first(
-                args.telegram_chat_id,
-                _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"),
-                file_cfg.get("telegram_chat_id"),
-                DEFAULTS.telegram_chat_id,
-            )
-        )
-        if _first(
-            args.telegram_chat_id,
-            _env_value(env, "STOPLIGA_TELEGRAM_CHAT_ID"),
-            file_cfg.get("telegram_chat_id"),
-            DEFAULTS.telegram_chat_id,
-        )
-        is not None
-        else None,
-        telegram_group_id=str(
-            _first(
-                args.telegram_group_id,
-                _env_value(env, "STOPLIGA_TELEGRAM_GROUP_ID"),
-                file_cfg.get("telegram_group_id"),
-                DEFAULTS.telegram_group_id,
-            )
-        )
-        if _first(
-            args.telegram_group_id,
-            _env_value(env, "STOPLIGA_TELEGRAM_GROUP_ID"),
-            file_cfg.get("telegram_group_id"),
-            DEFAULTS.telegram_group_id,
-        )
-        is not None
-        else None,
+        telegram_chat_id=str(telegram_chat_id_raw) if telegram_chat_id_raw is not None else None,
+        telegram_group_id=str(telegram_group_id_raw) if telegram_group_id_raw is not None else None,
         telegram_topic_id=_parse_int(
-            _first(
-                args.telegram_topic_id, _env_value(env, "STOPLIGA_TELEGRAM_TOPIC_ID"), file_cfg.get("telegram_topic_id")
-            ),
+            telegram_topic_id_raw,
             field_name="telegram_topic_id",
         )
-        if _first(
-            args.telegram_topic_id, _env_value(env, "STOPLIGA_TELEGRAM_TOPIC_ID"), file_cfg.get("telegram_topic_id")
-        )
-        is not None
+        if telegram_topic_id_raw is not None
         else None,
         notification_timeout=_parse_float(
             _first(

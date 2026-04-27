@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -14,7 +15,7 @@ from typing import Any, Sequence
 from .errors import AuthenticationError, ConfigError, DiscoveryError, NetworkError, RemoteRequestError
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot, SyncResult
-from .utils import make_ssl_context, read_limited, sleep_with_backoff, sort_ip_tokens
+from .utils import compact_json_bytes, make_ssl_context, read_limited, sleep_with_backoff, sort_ip_tokens
 
 
 SAFE_RETRY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -81,6 +82,7 @@ class OPNsenseClient:
             ca_file=config.opnsense_ca_file,
         )
         self.opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+        self.auth_header = self._build_auth_header(config)
 
     @property
     def base_url(self) -> str:
@@ -91,11 +93,10 @@ class OPNsenseClient:
             host = f"[{host}]"
         return f"https://{host}"
 
-    def _auth_header(self) -> str:
-        import base64
-
-        key = self.config.opnsense_api_key or ""
-        secret = self.config.opnsense_api_secret or ""
+    @staticmethod
+    def _build_auth_header(config: Config) -> str:
+        key = config.opnsense_api_key or ""
+        secret = config.opnsense_api_secret or ""
         return "Basic " + base64.b64encode(f"{key}:{secret}".encode()).decode()
 
     def request(
@@ -111,11 +112,11 @@ class OPNsenseClient:
         body_bytes: bytes | None = None
         headers: dict[str, str] = {
             "Accept": "application/json",
-            "Authorization": self._auth_header(),
+            "Authorization": self.auth_header,
         }
 
         if json_body is not None:
-            body_bytes = json.dumps(json_body).encode("utf-8")
+            body_bytes = compact_json_bytes(json_body)
             headers["Content-Type"] = "application/json"
         elif method_name == "POST":
             body_bytes = b""
@@ -368,6 +369,9 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
         client.apply_filter()
 
     if not desired_enabled and not desired_ips:
+        added = 0
+        removed = 0
+    elif current_ips == desired_ips:
         added = 0
         removed = 0
     else:

@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+IpTokenSortKey = tuple[int, int, int, int]
+
+
 def sleep_with_backoff(attempt: int) -> None:
     """Sleep with exponential backoff and bounded jitter."""
 
@@ -27,6 +30,12 @@ def stable_hash(value: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def compact_json_bytes(value: Any) -> bytes:
+    """Serialize a JSON request payload without whitespace."""
+
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+
+
 def canonicalize_ip_token(value: str) -> str:
     """Normalize a single IPv4/IPv6 address or CIDR to a canonical string."""
 
@@ -38,21 +47,49 @@ def canonicalize_ip_token(value: str) -> str:
     return str(ipaddress.ip_address(token))
 
 
+def ip_token_sort_key(token: str) -> IpTokenSortKey:
+    """Return the deterministic ordering key for a canonical IP/CIDR token."""
+
+    if "/" in token:
+        network = ipaddress.ip_network(token, strict=False)
+        return (network.version, int(network.network_address), network.prefixlen, 1)
+    address = ipaddress.ip_address(token)
+    return (address.version, int(address), address.max_prefixlen, 0)
+
+
+def canonicalize_ip_token_with_key(value: str) -> tuple[str, IpTokenSortKey]:
+    token = value.strip()
+    if not token:
+        raise ValueError("empty token")
+    if "/" in token:
+        network = ipaddress.ip_network(token, strict=False)
+        return str(network), (network.version, int(network.network_address), network.prefixlen, 1)
+    address = ipaddress.ip_address(token)
+    return str(address), (address.version, int(address), address.max_prefixlen, 0)
+
+
 def sort_ip_tokens(values: Iterable[str]) -> list[str]:
     """Deduplicate and sort IP/CIDR tokens in a deterministic order."""
 
-    unique = {canonicalize_ip_token(value) for value in values if value and value.strip()}
+    keyed_tokens: dict[str, IpTokenSortKey] = {}
+    for value in values:
+        if not value or not value.strip():
+            continue
+        token, key = canonicalize_ip_token_with_key(value)
+        keyed_tokens.setdefault(token, key)
+    return sorted(keyed_tokens, key=keyed_tokens.__getitem__)
 
-    def sort_key(token: str) -> tuple[int, int, int, int]:
-        network = ipaddress.ip_network(token, strict=False)
-        return (
-            network.version,
-            int(network.network_address),
-            network.prefixlen,
-            0 if "/" not in token else 1,
-        )
 
-    return sorted(unique, key=sort_key)
+def sort_canonical_ip_tokens(values: Iterable[str]) -> list[str]:
+    """Deduplicate and sort tokens that are already canonical IP/CIDR strings."""
+
+    keyed_tokens: dict[str, IpTokenSortKey] = {}
+    for token in values:
+        if not token or not token.strip():
+            continue
+        key = ip_token_sort_key(token)
+        keyed_tokens.setdefault(token, key)
+    return sorted(keyed_tokens, key=keyed_tokens.__getitem__)
 
 
 def make_ssl_context(*, verify: bool, ca_file: Path | None = None) -> ssl.SSLContext:

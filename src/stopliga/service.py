@@ -205,6 +205,7 @@ class StopLigaService:
             reconciliation_required=reconciliation_required,
             last_is_blocked=result.is_blocked if result else self._optional_bool(previous, "last_is_blocked"),
             last_gotify_message_id=self._notification_int(notification_state, previous, "last_gotify_message_id"),
+            last_ntfy_message_id=self._notification_str(notification_state, previous, "last_ntfy_message_id"),
             last_telegram_message_id=self._notification_int(notification_state, previous, "last_telegram_message_id"),
             last_telegram_chat_id=self._notification_str(notification_state, previous, "last_telegram_chat_id"),
             bootstrap_source=result.bootstrap_source if result else self._optional_str(previous, "bootstrap_source"),
@@ -340,6 +341,8 @@ class StopLigaService:
                         notification_state_payload: dict[str, object] = {}
                         if notification_result.gotify_message_id is not None:
                             notification_state_payload["last_gotify_message_id"] = notification_result.gotify_message_id
+                        if notification_result.ntfy_message_id is not None:
+                            notification_state_payload["last_ntfy_message_id"] = notification_result.ntfy_message_id
                         if notification_result.telegram_message_id is not None:
                             notification_state_payload["last_telegram_message_id"] = (
                                 notification_result.telegram_message_id

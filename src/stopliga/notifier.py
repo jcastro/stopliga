@@ -43,6 +43,7 @@ class ProviderRequestConfig:
 @dataclass(frozen=True)
 class NotificationState:
     gotify_message_id: int | None = None
+    ntfy_message_id: str | None = None
     telegram_message_id: int | None = None
     telegram_chat_id: str | None = None
 
@@ -50,6 +51,7 @@ class NotificationState:
     def has_values(self) -> bool:
         return (
             self.gotify_message_id is not None
+            or self.ntfy_message_id is not None
             or self.telegram_message_id is not None
             or self.telegram_chat_id is not None
         )
@@ -63,6 +65,7 @@ def _post_json(
     retries: int,
     verify_tls: bool,
     ca_file,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     body = compact_json_bytes(payload)
     opener = urllib.request.build_opener(
@@ -78,6 +81,7 @@ def _post_json(
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "User-Agent": DEFAULT_USER_AGENT,
+                **(headers or {}),
             },
             method="POST",
         )
@@ -131,6 +135,15 @@ def _gotify_request_config(config: Config) -> ProviderRequestConfig:
     )
 
 
+def _ntfy_request_config(config: Config) -> ProviderRequestConfig:
+    return ProviderRequestConfig(
+        timeout=config.notification_timeout,
+        retries=config.notification_retries,
+        verify_tls=config.ntfy_verify_tls if config.ntfy_verify_tls is not None else config.notification_verify_tls,
+        ca_file=config.ntfy_ca_file or config.notification_ca_file,
+    )
+
+
 def _telegram_request_config(config: Config) -> ProviderRequestConfig:
     return ProviderRequestConfig(
         timeout=config.notification_timeout,
@@ -150,6 +163,8 @@ def _configured_notification_providers(config: Config) -> list[str]:
     providers: list[str] = []
     if config.gotify_url and config.gotify_token:
         providers.append("Gotify")
+    if config.ntfy_url and config.ntfy_topic:
+        providers.append("ntfy")
     if config.telegram_bot_token and config.resolved_telegram_chat_id():
         providers.append("Telegram")
     return providers
@@ -241,6 +256,13 @@ def _extract_gotify_message_id(response: dict[str, Any] | None) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _extract_ntfy_message_id(response: dict[str, Any] | None) -> str | None:
+    if response is None:
+        return None
+    value = response.get("id")
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def _extract_telegram_message_id(response: dict[str, Any] | None) -> int | None:
     if response is None:
         return None
@@ -258,6 +280,7 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
     logger = logging.getLogger("stopliga.notify")
     failures: dict[str, str] = {}
     gotify_message_id: int | None = None
+    ntfy_message_id: str | None = None
     telegram_message_id: int | None = None
     telegram_chat_id: str | None = None
 
@@ -283,6 +306,31 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
         except StopLigaError as exc:
             failures["gotify"] = str(exc)
             log_event(logger, logging.ERROR, "notification_provider_failed", provider="gotify", error=exc)
+
+    if config.ntfy_url and config.ntfy_topic:
+        try:
+            request_config = _ntfy_request_config(config)
+            headers = {"Authorization": f"Bearer {config.ntfy_token}"} if config.ntfy_token else None
+            response = _post_json(
+                config.ntfy_url.rstrip("/"),
+                {
+                    "topic": config.ntfy_topic,
+                    "title": title,
+                    "message": message,
+                    "priority": config.ntfy_priority,
+                    "tags": ["shield"],
+                },
+                timeout=request_config.timeout,
+                retries=request_config.retries,
+                verify_tls=request_config.verify_tls,
+                ca_file=request_config.ca_file,
+                headers=headers,
+            )
+            ntfy_message_id = _extract_ntfy_message_id(response)
+            log_event(logger, logging.INFO, "notification_sent", provider="ntfy")
+        except StopLigaError as exc:
+            failures["ntfy"] = str(exc)
+            log_event(logger, logging.ERROR, "notification_provider_failed", provider="ntfy", error=exc)
 
     telegram_target = config.resolved_telegram_chat_id()
     if config.telegram_bot_token and telegram_target:
@@ -315,6 +363,7 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
         raise NotificationDeliveryError(failures)
     return NotificationState(
         gotify_message_id=gotify_message_id,
+        ntfy_message_id=ntfy_message_id,
         telegram_message_id=telegram_message_id,
         telegram_chat_id=telegram_chat_id,
     )

@@ -177,6 +177,13 @@ def _validate_gotify_url(url: str, *, allow_plain_http: bool) -> None:
         raise ConfigError("gotify_url must use https unless STOPLIGA_GOTIFY_ALLOW_PLAIN_HTTP=true")
 
 
+def _validate_ntfy_url(url: str, *, allow_plain_http: bool) -> None:
+    _validate_notification_url(url, field_name="ntfy_url")
+    parsed = urlparse(url)
+    if parsed.scheme == "http" and not allow_plain_http:
+        raise ConfigError("ntfy_url must use https unless STOPLIGA_NTFY_ALLOW_PLAIN_HTTP=true")
+
+
 def _validate_api_base_url(url: str, *, field_name: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in {"https", "http"}:
@@ -315,6 +322,10 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "gotify_url": notifications.get("gotify_url"),
         "gotify_token": notifications.get("gotify_token"),
         "gotify_priority": notifications.get("gotify_priority"),
+        "ntfy_url": notifications.get("ntfy_url"),
+        "ntfy_topic": notifications.get("ntfy_topic"),
+        "ntfy_token": notifications.get("ntfy_token"),
+        "ntfy_priority": notifications.get("ntfy_priority"),
         "telegram_bot_token": notifications.get("telegram_bot_token"),
         "telegram_chat_id": notifications.get("telegram_chat_id"),
         "telegram_group_id": notifications.get("telegram_group_id"),
@@ -326,6 +337,9 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "gotify_verify_tls": notifications.get("gotify_verify_tls"),
         "gotify_ca_file": notifications.get("gotify_ca_file"),
         "gotify_allow_plain_http": notifications.get("gotify_allow_plain_http"),
+        "ntfy_verify_tls": notifications.get("ntfy_verify_tls"),
+        "ntfy_ca_file": notifications.get("ntfy_ca_file"),
+        "ntfy_allow_plain_http": notifications.get("ntfy_allow_plain_http"),
         "telegram_verify_tls": notifications.get("telegram_verify_tls"),
         "telegram_ca_file": notifications.get("telegram_ca_file"),
     }
@@ -404,6 +418,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gotify-url", default=None, help="Gotify server URL")
     parser.add_argument("--gotify-token", default=None, help="Gotify application token")
     parser.add_argument("--gotify-priority", type=int, default=None, help="Gotify priority")
+    parser.add_argument("--ntfy-url", default=None, help="ntfy server URL")
+    parser.add_argument("--ntfy-topic", default=None, help="ntfy topic")
+    parser.add_argument("--ntfy-token", default=None, help="ntfy access token")
+    parser.add_argument("--ntfy-priority", type=int, default=None, help="ntfy priority, 1-5")
     parser.add_argument("--telegram-bot-token", default=None, help="Telegram bot token")
     parser.add_argument("--telegram-chat-id", default=None, help="Telegram user/chat id")
     parser.add_argument("--telegram-group-id", default=None, help="Telegram group or supergroup id")
@@ -995,6 +1013,35 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             ),
             field_name="gotify_priority",
         ),
+        ntfy_url=_first(
+            args.ntfy_url, _env_value(env, "STOPLIGA_NTFY_URL"), file_cfg.get("ntfy_url"), DEFAULTS.ntfy_url
+        ),
+        ntfy_topic=_normalize_optional_string(
+            _first(
+                args.ntfy_topic,
+                _env_value(env, "STOPLIGA_NTFY_TOPIC"),
+                file_cfg.get("ntfy_topic"),
+                DEFAULTS.ntfy_topic,
+            ),
+            field_name="ntfy_topic",
+        ),
+        ntfy_token=_first(
+            args.ntfy_token,
+            _env_secret_first(
+                env, field_name="ntfy_token", key="STOPLIGA_NTFY_TOKEN", key_file="STOPLIGA_NTFY_TOKEN_FILE"
+            ),
+            file_cfg.get("ntfy_token"),
+            DEFAULTS.ntfy_token,
+        ),
+        ntfy_priority=_parse_int(
+            _first(
+                args.ntfy_priority,
+                _env_value(env, "STOPLIGA_NTFY_PRIORITY"),
+                file_cfg.get("ntfy_priority"),
+                DEFAULTS.ntfy_priority,
+            ),
+            field_name="ntfy_priority",
+        ),
         telegram_bot_token=_first(
             args.telegram_bot_token,
             _env_secret_first(
@@ -1060,6 +1107,23 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             ),
             field_name="gotify_allow_plain_http",
         ),
+        ntfy_verify_tls=(
+            _parse_bool(value, field_name="ntfy_verify_tls")
+            if (value := _first(_env_value(env, "STOPLIGA_NTFY_VERIFY_TLS"), file_cfg.get("ntfy_verify_tls")))
+            is not None
+            else None
+        ),
+        ntfy_ca_file=_parse_path(value, field_name="ntfy_ca_file")
+        if (value := _first(_env_value(env, "STOPLIGA_NTFY_CA_FILE"), file_cfg.get("ntfy_ca_file")))
+        else None,
+        ntfy_allow_plain_http=_parse_bool(
+            _first(
+                _env_value(env, "STOPLIGA_NTFY_ALLOW_PLAIN_HTTP"),
+                file_cfg.get("ntfy_allow_plain_http"),
+                DEFAULTS.ntfy_allow_plain_http,
+            ),
+            field_name="ntfy_allow_plain_http",
+        ),
         telegram_verify_tls=(
             _parse_bool(value, field_name="telegram_verify_tls")
             if (value := _first(_env_value(env, "STOPLIGA_TELEGRAM_VERIFY_TLS"), file_cfg.get("telegram_verify_tls")))
@@ -1118,6 +1182,12 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("STOPLIGA_VPN_NAME and STOPLIGA_TARGETS are UniFi-only bootstrap options")
     if bool(config.gotify_url) != bool(config.gotify_token):
         raise ConfigError("Gotify notifications require both STOPLIGA_GOTIFY_URL and STOPLIGA_GOTIFY_TOKEN")
+    if bool(config.ntfy_url) != bool(config.ntfy_topic):
+        raise ConfigError("ntfy notifications require both STOPLIGA_NTFY_URL and STOPLIGA_NTFY_TOPIC")
+    if config.ntfy_token and not config.ntfy_url:
+        raise ConfigError("STOPLIGA_NTFY_TOKEN requires STOPLIGA_NTFY_URL and STOPLIGA_NTFY_TOPIC")
+    if config.ntfy_priority < 1 or config.ntfy_priority > 5:
+        raise ConfigError("STOPLIGA_NTFY_PRIORITY must be between 1 and 5")
     if config.telegram_chat_id and config.telegram_group_id:
         raise ConfigError("Set either STOPLIGA_TELEGRAM_CHAT_ID or STOPLIGA_TELEGRAM_GROUP_ID, not both")
     telegram_target = config.resolved_telegram_chat_id()
@@ -1146,6 +1216,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         _validate_host(config.host or "", field_name="UNIFI_HOST")
     if config.gotify_url:
         _validate_gotify_url(config.gotify_url, allow_plain_http=config.gotify_allow_plain_http)
+    if config.ntfy_url:
+        _validate_ntfy_url(config.ntfy_url, allow_plain_http=config.ntfy_allow_plain_http)
     if config.telegram_bot_token:
         if config.telegram_verify_tls is False:
             raise ConfigError("telegram_verify_tls=false is not supported; Telegram notifications must verify TLS")

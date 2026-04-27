@@ -69,6 +69,10 @@ class Config:
     gotify_url: str | None = None
     gotify_token: str | None = None
     gotify_priority: int = 5
+    ntfy_url: str | None = None
+    ntfy_topic: str | None = None
+    ntfy_token: str | None = None
+    ntfy_priority: int = 3
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_group_id: str | None = None
@@ -80,6 +84,9 @@ class Config:
     gotify_verify_tls: bool | None = None
     gotify_ca_file: Path | None = None
     gotify_allow_plain_http: bool = False
+    ntfy_verify_tls: bool | None = None
+    ntfy_ca_file: Path | None = None
+    ntfy_allow_plain_http: bool = False
     telegram_verify_tls: bool | None = None
     telegram_ca_file: Path | None = None
 
@@ -115,7 +122,9 @@ class Config:
 
     def has_notifications(self) -> bool:
         return bool(
-            (self.gotify_url and self.gotify_token) or (self.telegram_bot_token and self.resolved_telegram_chat_id())
+            (self.gotify_url and self.gotify_token)
+            or (self.ntfy_url and self.ntfy_topic)
+            or (self.telegram_bot_token and self.resolved_telegram_chat_id())
         )
 
     def resolved_telegram_chat_id(self) -> str | None:
@@ -235,6 +244,7 @@ class StateSnapshot:
     reconciliation_required: bool = False
     last_is_blocked: bool | None = None
     last_gotify_message_id: int | None = None
+    last_ntfy_message_id: str | None = None
     last_telegram_message_id: int | None = None
     last_telegram_chat_id: str | None = None
     bootstrap_source: str | None = None

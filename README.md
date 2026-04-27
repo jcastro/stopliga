@@ -195,6 +195,7 @@ The `/config` mount is optional.
 StopLiga can also notify through:
 
 - Gotify
+- ntfy
 - Telegram
 
 When notifications are configured and StopLiga runs in `loop` mode, it sends a startup test message once when the service begins so you can verify delivery without waiting for the next route change.

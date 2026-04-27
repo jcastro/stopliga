@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 from .errors import NetworkError, NotificationDeliveryError, StopLigaError
 from .logging_utils import log_event
@@ -122,12 +122,91 @@ def _post_json(
     return None
 
 
+def _post_text(
+    url: str,
+    message: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float,
+    retries: int,
+    verify_tls: bool,
+    ca_file,
+) -> dict[str, Any] | None:
+    body = message.encode("utf-8")
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=make_ssl_context(verify=verify_tls, ca_file=ca_file))
+    )
+    safe_url = _safe_notification_url(url)
+    logger = logging.getLogger("stopliga.notify")
+    request_headers = {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Accept": "application/json",
+        "User-Agent": DEFAULT_USER_AGENT,
+        **(headers or {}),
+    }
+    for attempt in range(1, max(1, retries) + 1):
+        request = urllib.request.Request(
+            url,
+            data=body,
+            headers=request_headers,
+            method="POST",
+        )
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                raw = response.read()
+                if not raw:
+                    return None
+                try:
+                    parsed = json.loads(raw.decode("utf-8", errors="replace"))
+                except json.JSONDecodeError:
+                    return None
+                return parsed if isinstance(parsed, dict) else None
+        except urllib.error.HTTPError as exc:
+            if exc.code in {408, 429, 500, 502, 503, 504} and attempt < retries:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "notification_retry",
+                    url=safe_url,
+                    attempt=attempt,
+                    retries=retries,
+                    status=exc.code,
+                )
+                sleep_with_backoff(attempt)
+                continue
+            raise NetworkError(f"Notification request failed for {safe_url}: HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
+            if attempt < retries:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "notification_retry",
+                    url=safe_url,
+                    attempt=attempt,
+                    retries=retries,
+                    error=exc,
+                )
+                sleep_with_backoff(attempt)
+                continue
+            raise NetworkError(f"Notification request failed for {safe_url}: {exc}") from exc
+    return None
+
+
 def _gotify_request_config(config: Config) -> ProviderRequestConfig:
     return ProviderRequestConfig(
         timeout=config.notification_timeout,
         retries=config.notification_retries,
         verify_tls=config.gotify_verify_tls if config.gotify_verify_tls is not None else config.notification_verify_tls,
         ca_file=config.gotify_ca_file or config.notification_ca_file,
+    )
+
+
+def _ntfy_request_config(config: Config) -> ProviderRequestConfig:
+    return ProviderRequestConfig(
+        timeout=config.notification_timeout,
+        retries=config.notification_retries,
+        verify_tls=config.ntfy_verify_tls if config.ntfy_verify_tls is not None else config.notification_verify_tls,
+        ca_file=config.ntfy_ca_file or config.notification_ca_file,
     )
 
 
@@ -150,6 +229,8 @@ def _configured_notification_providers(config: Config) -> list[str]:
     providers: list[str] = []
     if config.gotify_url and config.gotify_token:
         providers.append("Gotify")
+    if config.ntfy_url and config.ntfy_topic:
+        providers.append("Ntfy")
     if config.telegram_bot_token and config.resolved_telegram_chat_id():
         providers.append("Telegram")
     return providers
@@ -303,6 +384,30 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
         except StopLigaError as exc:
             failures["gotify"] = str(exc)
             log_event(logger, logging.ERROR, "notification_provider_failed", provider="gotify", error=exc)
+
+    if config.ntfy_url and config.ntfy_topic:
+        try:
+            ntfy_url = config.ntfy_url.rstrip("/") + "/" + quote(config.ntfy_topic, safe="")
+            request_config = _ntfy_request_config(config)
+            headers = {
+                "Title": title,
+                "Priority": str(config.ntfy_priority),
+            }
+            if config.ntfy_token:
+                headers["Authorization"] = f"Bearer {config.ntfy_token}"
+            _post_text(
+                ntfy_url,
+                message,
+                headers=headers,
+                timeout=request_config.timeout,
+                retries=request_config.retries,
+                verify_tls=request_config.verify_tls,
+                ca_file=request_config.ca_file,
+            )
+            log_event(logger, logging.INFO, "notification_sent", provider="ntfy")
+        except StopLigaError as exc:
+            failures["ntfy"] = str(exc)
+            log_event(logger, logging.ERROR, "notification_provider_failed", provider="ntfy", error=exc)
 
     telegram_target = config.resolved_telegram_chat_id()
     if config.telegram_bot_token and telegram_target:

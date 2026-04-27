@@ -65,6 +65,12 @@ verify_tls = false
 # gotify_url = "https://gotify.example.com"
 # gotify_token = "replace-me"
 #
+# Ntfy
+# ntfy_url = "https://ntfy.sh"
+# ntfy_topic = "stopliga-alerts"
+# ntfy_token = "replace-me"
+# ntfy_priority = 3
+#
 # Telegram
 # telegram_bot_token = "123456:replace-me"
 # telegram_chat_id = "123456789"

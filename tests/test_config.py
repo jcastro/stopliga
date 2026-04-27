@@ -459,6 +459,38 @@ api_key = "file-api-key"
                 },
             )
 
+    def test_ntfy_configuration_loads_from_environment(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        config = load_config(
+            args,
+            {
+                "UNIFI_HOST": "10.0.0.2",
+                "UNIFI_API_KEY": "test-api-key",
+                "STOPLIGA_NTFY_URL": "https://ntfy.sh",
+                "STOPLIGA_NTFY_TOPIC": "stopliga-test",
+                "STOPLIGA_NTFY_TOKEN": "tk_test",
+                "STOPLIGA_NTFY_PRIORITY": "4",
+            },
+        )
+        self.assertEqual(config.ntfy_url, "https://ntfy.sh")
+        self.assertEqual(config.ntfy_topic, "stopliga-test")
+        self.assertEqual(config.ntfy_token, "tk_test")
+        self.assertEqual(config.ntfy_priority, 4)
+
+    def test_partial_ntfy_configuration_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_NTFY_URL": "https://ntfy.sh",
+                },
+            )
+
     def test_partial_telegram_configuration_is_rejected(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
@@ -543,6 +575,20 @@ api_key = "file-api-key"
                 },
             )
 
+    def test_ntfy_url_with_embedded_credentials_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_NTFY_URL": "https://user:pass@ntfy.example",
+                    "STOPLIGA_NTFY_TOPIC": "stopliga",
+                },
+            )
+
     def test_notification_retries_must_be_positive(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
@@ -591,6 +637,49 @@ api_key = "file-api-key"
                     "UNIFI_API_KEY": "test-api-key",
                     "STOPLIGA_GOTIFY_URL": "http://gotify.example",
                     "STOPLIGA_GOTIFY_TOKEN": "token",
+                },
+            )
+
+    def test_ntfy_plain_http_requires_explicit_override(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_NTFY_URL": "http://ntfy.example",
+                    "STOPLIGA_NTFY_TOPIC": "stopliga",
+                },
+            )
+
+    def test_ntfy_topic_must_be_single_path_segment(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_NTFY_URL": "https://ntfy.example",
+                    "STOPLIGA_NTFY_TOPIC": "alerts/stopliga",
+                },
+            )
+
+    def test_ntfy_priority_must_be_between_one_and_five(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_NTFY_URL": "https://ntfy.example",
+                    "STOPLIGA_NTFY_TOPIC": "stopliga",
+                    "STOPLIGA_NTFY_PRIORITY": "6",
                 },
             )
 

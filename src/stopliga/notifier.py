@@ -16,7 +16,7 @@ from .logging_utils import log_event
 from .models import Config, SyncResult
 from .utils import compact_json_bytes, make_ssl_context, sleep_with_backoff
 
-DEFAULT_USER_AGENT = "stopliga/0.1.25"
+DEFAULT_USER_AGENT = "stopliga/0.1.26"
 
 
 def _safe_notification_url(url: str) -> str:
@@ -161,29 +161,9 @@ def _destination_scope_label(config: Config) -> str:
     return f"ISP: all active ISPs / last {config.hayahora_lookback_hours}h"
 
 
-def _optional_int(payload: dict[str, object], key: str) -> int | None:
-    value = payload.get(key)
-    if isinstance(value, bool):
-        return None
-    return value if isinstance(value, int) else None
-
-
-def _optional_str(payload: dict[str, object], key: str) -> str | None:
-    value = payload.get(key)
-    return value if isinstance(value, str) and value.strip() else None
-
-
 def _block_status_changed(result: SyncResult, previous_state: dict[str, object]) -> bool:
     previous_blocked = previous_state.get("last_is_blocked")
     return isinstance(previous_blocked, bool) and previous_blocked != result.is_blocked
-
-
-def _needs_initial_status_notification(previous_state: dict[str, object]) -> bool:
-    return not isinstance(previous_state.get("last_is_blocked"), bool)
-
-
-def _destinations_changed(result: SyncResult) -> bool:
-    return bool(result.added_destinations or result.removed_destinations)
 
 
 def build_startup_notification_message(config: Config) -> str | None:
@@ -340,40 +320,6 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
     )
 
 
-def _edit_telegram_notification_message(
-    config: Config, *, message: str, previous_state: dict[str, object]
-) -> NotificationState:
-    telegram_target = config.resolved_telegram_chat_id()
-    previous_message_id = _optional_int(previous_state, "last_telegram_message_id")
-    previous_chat_id = _optional_str(previous_state, "last_telegram_chat_id")
-    if not config.telegram_bot_token or not telegram_target or previous_message_id is None:
-        return NotificationState()
-    if previous_chat_id is not None and previous_chat_id != telegram_target:
-        return NotificationState()
-
-    telegram_url = f"https://api.telegram.org/bot{config.telegram_bot_token}/editMessageText"
-    request_config = _telegram_request_config(config)
-    telegram_payload: dict[str, Any] = {
-        "chat_id": telegram_target,
-        "message_id": previous_message_id,
-        "text": message,
-        "disable_web_page_preview": True,
-    }
-    if config.telegram_topic_id is not None:
-        telegram_payload["message_thread_id"] = config.telegram_topic_id
-    response = _post_json(
-        telegram_url,
-        telegram_payload,
-        timeout=request_config.timeout,
-        retries=request_config.retries,
-        verify_tls=request_config.verify_tls,
-        ca_file=request_config.ca_file,
-    )
-    edited_message_id = _extract_telegram_message_id(response) or previous_message_id
-    log_event(logging.getLogger("stopliga.notify"), logging.INFO, "notification_sent", provider="telegram", edited=True)
-    return NotificationState(telegram_message_id=edited_message_id, telegram_chat_id=telegram_target)
-
-
 def send_startup_notification(config: Config) -> None:
     if config.dry_run or not config.has_notifications():
         return
@@ -390,32 +336,17 @@ def send_notifications(config: Config, result: SyncResult, previous_state: dict[
         return NotificationState()
 
     block_changed = _block_status_changed(result, previous_state)
-    initial_status = _needs_initial_status_notification(previous_state)
-    destinations_changed = _destinations_changed(result)
-    if not block_changed and not initial_status and not destinations_changed:
+    if not block_changed:
         return NotificationState()
 
     message = build_notification_message(
         config,
         result,
         previous_state,
-        include_block_status=block_changed or initial_status,
-        include_destinations=destinations_changed,
+        include_block_status=True,
+        include_destinations=False,
     )
     if not message:
         return NotificationState()
 
-    if block_changed or initial_status:
-        return _send_notification_message(config, title="StopLiga", message=message)
-
-    try:
-        return _edit_telegram_notification_message(config, message=message, previous_state=previous_state)
-    except StopLigaError as exc:
-        log_event(
-            logging.getLogger("stopliga.notify"),
-            logging.ERROR,
-            "notification_provider_failed",
-            provider="telegram",
-            error=exc,
-        )
-        raise NotificationDeliveryError({"telegram": str(exc)}) from exc
+    return _send_notification_message(config, title="StopLiga", message=message)

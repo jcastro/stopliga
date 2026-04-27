@@ -28,7 +28,7 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.25"
+DEFAULT_USER_AGENT = "stopliga/0.1.26"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 # Hayahora's canonical JSON feed is historical and keeps growing over time,
@@ -249,10 +249,10 @@ def extract_hayahora_active_ips(
         latest = state_changes[-1]
         if not isinstance(latest, dict) or "state" not in latest:
             continue
+        if not _truthy_state(latest["state"]):
+            continue
         latest_timestamp = _parse_hayahora_timestamp(latest.get("timestamp"))
         if latest_timestamp is None or latest_timestamp < cutoff:
-            continue
-        if not _truthy_state(latest["state"]):
             continue
         ip_value = entry.get("ip")
         if not isinstance(ip_value, str) or not ip_value.strip():
@@ -433,7 +433,12 @@ def _load_structured_hayahora_status(config: Config) -> dict[str, Any]:
 
 
 def _summarize_hayahora_active_status(
-    payload: dict[str, Any], *, is_blocked: bool, active_ip_count: int, inspected_entries: int
+    payload: dict[str, Any],
+    *,
+    is_blocked: bool,
+    active_ip_count: int,
+    inspected_entries: int,
+    strategy: str = "hayahora-active-destinations",
 ) -> dict[str, Any]:
     return {
         "source": "hayahora-history-json",
@@ -441,7 +446,7 @@ def _summarize_hayahora_active_status(
         "blocked": is_blocked,
         "activeIpCount": active_ip_count,
         "inspectedEntryCount": inspected_entries,
-        "strategy": "hayahora-active-destinations",
+        "strategy": strategy,
     }
 
 
@@ -564,14 +569,20 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
         invalid_entry_policy=config.invalid_entry_policy,
         max_destinations=config.max_destinations,
     )
-    desired_enabled = bool(destinations)
-    is_blocked = desired_enabled
-    raw_status = _summarize_hayahora_active_status(
-        status_payload,
-        is_blocked=is_blocked,
-        active_ip_count=len(destinations),
-        inspected_entries=raw_lines,
-    )
+    raw_status, is_blocked = parse_status_payload_value(status_payload)
+    if raw_status is status_payload:
+        raw_status = _summarize_hayahora_active_status(
+            status_payload,
+            is_blocked=is_blocked,
+            active_ip_count=len(destinations),
+            inspected_entries=raw_lines,
+            strategy="explicit-status-field",
+        )
+    else:
+        raw_status = dict(raw_status)
+        raw_status.setdefault("activeDestinationCount", len(destinations))
+        raw_status.setdefault("inspectedEntryCount", raw_lines)
+    desired_enabled = is_blocked
     snapshot = FeedSnapshot(
         is_blocked=is_blocked,
         desired_enabled=desired_enabled,

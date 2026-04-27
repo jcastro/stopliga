@@ -70,12 +70,13 @@ class FakeState:
     def __post_init__(self) -> None:
         if "data" in self.status_payload:
             return
+        original_status = dict(self.status_payload)
         blocked = bool(
             self.status_payload.get("isBlocked")
             or self.status_payload.get("blocked")
             or self.status_payload.get("state") in {"blocked", "active", "enabled"}
         )
-        self.status_payload = {
+        self.status_payload = original_status | {
             "lastUpdate": "2026-04-23 09:16:40",
             "data": [
                 {
@@ -1476,7 +1477,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertTrue(result.changed)
             self.assertFalse(state.route["enabled"])
 
-    def test_gotify_notification_is_sent_for_block_and_ip_changes(self) -> None:
+    def test_gotify_notification_is_sent_for_block_change_without_ip_delta(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": True},
             ip_lines=["192.0.2.10", "198.51.100.0/24"],
@@ -1509,7 +1510,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertEqual(len(state.gotify_messages), 1)
             self.assertIn("Route: LaLiga", state.gotify_messages[0]["message"])
             self.assertIn("Block status: INACTIVE -> ACTIVE", state.gotify_messages[0]["message"])
-            self.assertIn("Destinations: +2 added, -1 removed", state.gotify_messages[0]["message"])
+            self.assertNotIn("Destinations:", state.gotify_messages[0]["message"])
             self.assertIn("Blocking: ACTIVE", state.gotify_messages[0]["message"])
             self.assertIn("Destination scope: ISP: DIGI / last 24h", state.gotify_messages[0]["message"])
 
@@ -1569,7 +1570,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertIn("Blocking: INACTIVE", state.telegram_messages[0]["text"])
             self.assertIn("Destination scope: ISP: all active ISPs / last 24h", state.telegram_messages[0]["text"])
 
-    def test_first_successful_run_sends_current_block_status_notification(self) -> None:
+    def test_first_successful_run_does_not_send_current_block_status_notification(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": True},
             ip_lines=["192.0.2.10"],
@@ -1617,11 +1618,9 @@ class ServiceIntegrationTests(unittest.TestCase):
             finally:
                 notifier._post_json = original_post_json
 
-            self.assertEqual(len(state.telegram_messages), 1)
-            self.assertIn("Block status: ACTIVE", state.telegram_messages[0]["text"])
-            self.assertIn("Blocking: ACTIVE", state.telegram_messages[0]["text"])
+            self.assertEqual(state.telegram_messages, [])
             persisted = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
-            self.assertEqual(persisted["last_telegram_message_id"], 101)
+            self.assertEqual(persisted["last_is_blocked"], True)
 
     def test_telegram_notification_can_target_group_topic(self) -> None:
         state = FakeState(
@@ -1678,7 +1677,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             self.assertEqual(state.telegram_messages[0]["message_thread_id"], 77)
             self.assertIn("Block status: ACTIVE -> INACTIVE", state.telegram_messages[0]["text"])
 
-    def test_destination_only_change_edits_telegram_message(self) -> None:
+    def test_destination_only_change_does_not_send_or_edit_telegram_message(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": True},
             ip_lines=["192.0.2.10", "198.51.100.0/24"],
@@ -1738,11 +1737,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             finally:
                 notifier._post_json = original_post_json
 
-            self.assertEqual(len(calls), 1)
-            self.assertTrue(calls[0]["url"].endswith("/editMessageText"))
-            self.assertEqual(calls[0]["message_id"], 42)
-            self.assertIn("Destinations: +1 added", calls[0]["text"])
-            self.assertNotIn("Block status:", calls[0]["text"])
+            self.assertEqual(calls, [])
             persisted = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(persisted["last_telegram_message_id"], 42)
             self.assertEqual(persisted["last_telegram_chat_id"], "123456")

@@ -486,7 +486,7 @@ class FeedLoadingTests(unittest.TestCase):
                   "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
                 },
                 {
-                  "ip": "188.114.97.5",
+                  "ip": "104.16.93.114",
                   "description": "Cloudflare",
                   "isp": "Movistar",
                   "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
@@ -497,9 +497,36 @@ class FeedLoadingTests(unittest.TestCase):
         ):
             snapshot = load_feed_snapshot(config)
 
-        self.assertTrue(snapshot.desired_enabled)
+        self.assertFalse(snapshot.is_blocked)
+        self.assertFalse(snapshot.desired_enabled)
         self.assertEqual(snapshot.destinations, ["188.114.96.5"])
         self.assertEqual(snapshot.raw_line_count, 2)
+
+    def test_load_feed_snapshot_uses_hayahora_site_state_not_destination_presence(self) -> None:
+        config = Config(retries=1)
+
+        with patch(
+            "stopliga.feed.fetch_text",
+            return_value="""
+            {
+              "lastUpdate": "2026-04-23 09:16:40",
+              "data": [
+                {
+                  "ip": "104.16.93.114",
+                  "description": "Cloudflare",
+                  "isp": "DIGI",
+                  "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
+                }
+              ]
+            }
+            """,
+        ):
+            snapshot = load_feed_snapshot(config)
+
+        self.assertFalse(snapshot.is_blocked)
+        self.assertFalse(snapshot.desired_enabled)
+        self.assertEqual(snapshot.destinations, ["104.16.93.114"])
+        self.assertEqual(snapshot.raw_status["strategy"], "hayahora-site-hero")
 
     def test_load_feed_snapshot_decodes_structured_hayahora_json_once(self) -> None:
         config = Config(retries=1)
@@ -544,6 +571,12 @@ class FeedLoadingTests(unittest.TestCase):
                   "description": "Cloudflare",
                   "isp": "DIGI",
                   "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
+                },
+                {
+                  "ip": "188.114.97.5",
+                  "description": "Cloudflare",
+                  "isp": "Movistar",
+                  "stateChanges": [{"timestamp": "2026-04-23 09:00:00Z", "state": true}]
                 }
               ]
             }
@@ -571,7 +604,7 @@ class FeedLoadingTests(unittest.TestCase):
 
         self.assertTrue(blocked_snapshot.is_blocked)
         self.assertTrue(blocked_snapshot.desired_enabled)
-        self.assertEqual(blocked_snapshot.destinations, ["188.114.96.5"])
+        self.assertEqual(blocked_snapshot.destinations, ["188.114.96.5", "188.114.97.5"])
         self.assertFalse(unblocked_snapshot.is_blocked)
         self.assertFalse(unblocked_snapshot.desired_enabled)
         self.assertEqual(unblocked_snapshot.destinations, [])

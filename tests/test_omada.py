@@ -55,12 +55,13 @@ class FakeOmadaState:
     def __post_init__(self) -> None:
         if "data" in self.status_payload:
             return
+        original_status = dict(self.status_payload)
         blocked = bool(
             self.status_payload.get("isBlocked")
             or self.status_payload.get("blocked")
             or self.status_payload.get("state") in {"blocked", "active", "enabled"}
         )
-        self.status_payload = {
+        self.status_payload = original_status | {
             "lastUpdate": "2026-04-23 09:16:40",
             "data": [
                 {

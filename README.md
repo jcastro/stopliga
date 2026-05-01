@@ -185,7 +185,7 @@ docker run -d \
   --env-file .env \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/config:/config:ro" \
-  ghcr.io/jcastro/stopliga:0.1.26
+  ghcr.io/jcastro/stopliga:0.1.27
 ```
 
 The `/config` mount is optional.
@@ -201,6 +201,15 @@ StopLiga can also notify through:
 When notifications are configured and StopLiga runs in `loop` mode, it sends a startup test message once when the service begins so you can verify delivery without waiting for the next route change.
 
 Most users can ignore notifications until the main sync is working.
+
+Minimal ntfy `.env`:
+
+```dotenv
+STOPLIGA_NTFY_URL=https://ntfy.sh
+STOPLIGA_NTFY_TOPIC=replace-me-topic
+# STOPLIGA_NTFY_TOKEN=replace-me
+STOPLIGA_NTFY_PRIORITY=3
+```
 
 ## Feed Safety Ceiling
 

@@ -182,6 +182,17 @@ def _validate_ntfy_url(url: str, *, allow_plain_http: bool) -> None:
     parsed = urlparse(url)
     if parsed.scheme == "http" and not allow_plain_http:
         raise ConfigError("ntfy_url must use https unless STOPLIGA_NTFY_ALLOW_PLAIN_HTTP=true")
+    if parsed.query or parsed.fragment:
+        raise ConfigError("ntfy_url must not include query or fragment components")
+
+
+def _validate_ntfy_topic(topic: str) -> None:
+    if not topic.strip():
+        raise ConfigError("ntfy_topic must not be empty")
+    if topic != topic.strip():
+        raise ConfigError("ntfy_topic must not contain leading or trailing whitespace")
+    if any(ch.isspace() for ch in topic) or any(ch in topic for ch in "/?#"):
+        raise ConfigError("ntfy_topic must be a single topic name without whitespace, slashes, query or fragment")
 
 
 def _validate_api_base_url(url: str, *, field_name: str) -> None:
@@ -1218,6 +1229,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         _validate_gotify_url(config.gotify_url, allow_plain_http=config.gotify_allow_plain_http)
     if config.ntfy_url:
         _validate_ntfy_url(config.ntfy_url, allow_plain_http=config.ntfy_allow_plain_http)
+    if config.ntfy_topic:
+        _validate_ntfy_topic(config.ntfy_topic)
     if config.telegram_bot_token:
         if config.telegram_verify_tls is False:
             raise ConfigError("telegram_verify_tls=false is not supported; Telegram notifications must verify TLS")

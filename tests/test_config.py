@@ -575,6 +575,34 @@ api_key = "file-api-key"
                 },
             )
 
+    def test_ntfy_url_with_embedded_credentials_is_rejected(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_NTFY_URL": "https://user:pass@ntfy.example",
+                    "STOPLIGA_NTFY_TOPIC": "stopliga-test",
+                },
+            )
+
+    def test_ntfy_url_must_not_include_query_or_fragment(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_NTFY_URL": "https://ntfy.example?debug=1",
+                    "STOPLIGA_NTFY_TOPIC": "stopliga-test",
+                },
+            )
+
     def test_notification_retries_must_be_positive(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
@@ -637,6 +665,20 @@ api_key = "file-api-key"
                     "UNIFI_API_KEY": "test-api-key",
                     "STOPLIGA_NTFY_URL": "http://ntfy.example",
                     "STOPLIGA_NTFY_TOPIC": "stopliga-test",
+                },
+            )
+
+    def test_ntfy_topic_must_be_single_path_segment(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        with self.assertRaises(ConfigError):
+            load_config(
+                args,
+                {
+                    "UNIFI_HOST": "10.0.0.2",
+                    "UNIFI_API_KEY": "test-api-key",
+                    "STOPLIGA_NTFY_URL": "https://ntfy.sh",
+                    "STOPLIGA_NTFY_TOPIC": "alerts/stopliga",
                 },
             )
 

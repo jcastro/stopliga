@@ -16,7 +16,7 @@ from .logging_utils import log_event
 from .models import Config, SyncResult
 from .utils import compact_json_bytes, make_ssl_context, sleep_with_backoff
 
-DEFAULT_USER_AGENT = "stopliga/0.1.26"
+DEFAULT_USER_AGENT = "stopliga/0.1.27"
 
 
 def _safe_notification_url(url: str) -> str:

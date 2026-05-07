@@ -48,11 +48,7 @@ def validate_feed_url(
         raise ConfigError(f"{field_name} must not embed credentials")
     if parsed.scheme == "http" and parsed.hostname not in LOOPBACK_HTTP_HOSTS:
         raise ConfigError(f"{field_name} only allows plain HTTP for localhost/127.0.0.1")
-    if (
-        is_private_hostname(parsed.hostname)
-        and not allow_private_hosts
-        and parsed.hostname not in LOOPBACK_HTTP_HOSTS
-    ):
+    if is_private_hostname(parsed.hostname) and not allow_private_hosts and parsed.hostname not in LOOPBACK_HTTP_HOSTS:
         raise ConfigError(f"{field_name} points to a private or local host; set feed_allow_private_hosts to override")
 
 

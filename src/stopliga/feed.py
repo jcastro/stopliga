@@ -13,7 +13,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-from .errors import InvalidFeedError, NetworkError
+from .errors import ConfigError, InvalidFeedError, NetworkError
+from .feed_policy import validate_feed_redirect_url
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot
 from .utils import (
@@ -28,7 +29,7 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.27"
+DEFAULT_USER_AGENT = "stopliga/0.1.28"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 # Hayahora's canonical JSON feed is historical and keeps growing over time,
@@ -41,6 +42,30 @@ HAYAHORA_HERO_DESCRIPTION = "Cloudflare"
 HAYAHORA_HERO_MIN_PROVIDER_MATCHES = 3
 HAYAHORA_HERO_MIN_CONFIRMED_IPS = 11
 HAYAHORA_HERO_SENTINEL_IPS = frozenset({"188.114.96.5", "188.114.97.5"})
+
+
+class FeedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, *, allow_private_hosts: bool):
+        self.allow_private_hosts = allow_private_hosts
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        try:
+            validate_feed_redirect_url(
+                newurl,
+                source_url=req.full_url,
+                allow_private_hosts=self.allow_private_hosts,
+            )
+        except ConfigError as exc:
+            raise urllib.error.URLError(f"Unsafe feed redirect blocked: {exc}") from exc
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _truthy_state(value: Any) -> bool:
@@ -311,13 +336,17 @@ def fetch_text(
     retries: int,
     verify_tls: bool,
     max_bytes: int,
+    allow_private_hosts: bool = False,
     ca_file: Any = None,
 ) -> str:
     """Fetch a text payload over HTTP(S) with retries and explicit TLS control."""
 
     logger = logging.getLogger("stopliga.feed")
     context = make_ssl_context(verify=verify_tls, ca_file=ca_file)
-    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context),
+        FeedRedirectHandler(allow_private_hosts=allow_private_hosts),
+    )
     last_error: Exception | None = None
     safe_url = _safe_log_url(url)
 
@@ -400,6 +429,7 @@ def _load_hayahora_canonical_status(config: Config) -> tuple[dict[str, Any], boo
         retries=config.retries,
         verify_tls=config.feed_verify_tls,
         max_bytes=max(config.max_response_bytes, HAYAHORA_STATUS_MAX_BYTES),
+        allow_private_hosts=config.feed_allow_private_hosts,
         ca_file=config.feed_ca_file,
     )
     return parse_status_payload(raw_status_text)
@@ -419,6 +449,7 @@ def _load_structured_hayahora_status(config: Config) -> dict[str, Any]:
         max_bytes=max(config.max_response_bytes, HAYAHORA_STATUS_MAX_BYTES)
         if status_url == HAYAHORA_STATUS_JSON_URL
         else config.max_response_bytes,
+        allow_private_hosts=config.feed_allow_private_hosts,
         ca_file=config.feed_ca_file,
     )
     try:
@@ -538,6 +569,7 @@ def load_status_snapshot(config: Config) -> tuple[dict[str, Any], bool]:
         retries=config.retries,
         verify_tls=config.feed_verify_tls,
         max_bytes=config.max_response_bytes,
+        allow_private_hosts=config.feed_allow_private_hosts,
         ca_file=config.feed_ca_file,
     )
     return parse_status_payload(raw_status_text)

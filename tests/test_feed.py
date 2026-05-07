@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 import socket
 import sys
@@ -19,6 +22,7 @@ if str(SRC) not in sys.path:
 from stopliga.errors import InvalidFeedError, NetworkError  # noqa: E402
 from stopliga.feed import (  # noqa: E402
     extract_hayahora_active_ips,
+    fetch_text,
     load_feed_snapshot,
     load_status_snapshot,
     parse_ip_list,
@@ -28,6 +32,65 @@ from stopliga.feed import (  # noqa: E402
 from stopliga.models import Config  # noqa: E402
 from stopliga.state import StateStore  # noqa: E402
 from stopliga.unifi import build_ip_objects, build_route_update_template  # noqa: E402
+
+
+ORIGINAL_GETADDRINFO = socket.getaddrinfo
+
+
+class LocalHttpServer:
+    def __init__(self, handler: type[BaseHTTPRequestHandler], **attrs: Any):
+        self.handler = handler
+        self.attrs = attrs
+
+    def __enter__(self) -> "LocalHttpServer":
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.handler)
+        self.httpd.requests_seen = []  # type: ignore[attr-defined]
+        for name, value in self.attrs.items():
+            setattr(self.httpd, name, value)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = int(self.httpd.server_address[1])
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    @property
+    def requests_seen(self) -> list[str]:
+        return self.httpd.requests_seen  # type: ignore[attr-defined]
+
+
+class RedirectHandler(BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        return
+
+    def do_GET(self) -> None:  # noqa: N802
+        self.server.requests_seen.append(self.path)  # type: ignore[attr-defined]
+        self.send_response(302)
+        self.send_header("Location", self.server.redirect_target)  # type: ignore[attr-defined]
+        self.end_headers()
+
+
+class TextHandler(BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+        return
+
+    def do_GET(self) -> None:  # noqa: N802
+        self.server.requests_seen.append(self.path)  # type: ignore[attr-defined]
+        body = b'{"lastUpdate": "2026-05-07 00:00:00", "data": []}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def resolve_public_test_to_loopback(host: str, port: int, *args: Any, **kwargs: Any) -> Any:
+    if host == "public.test":
+        return ORIGINAL_GETADDRINFO("127.0.0.1", port, *args, **kwargs)
+    return ORIGINAL_GETADDRINFO(host, port, *args, **kwargs)
 
 
 class FeedParsingTests(unittest.TestCase):
@@ -354,6 +417,69 @@ class StateStoreTests(unittest.TestCase):
 class FeedLoadingTests(unittest.TestCase):
     def test_default_status_url_uses_canonical_hayahora_json(self) -> None:
         self.assertEqual(Config().status_url, "https://hayahora.futbol/estado/data.json")
+
+    def test_fetch_text_blocks_public_redirect_to_loopback_by_default(self) -> None:
+        with (
+            LocalHttpServer(TextHandler) as internal_server,
+            LocalHttpServer(
+                RedirectHandler,
+                redirect_target=f"http://127.0.0.1:{internal_server.port}/internal-status.json",
+            ) as feed_server,
+            patch("socket.getaddrinfo", side_effect=resolve_public_test_to_loopback),
+        ):
+            with self.assertRaisesRegex(NetworkError, "Unsafe feed redirect blocked"):
+                fetch_text(
+                    f"http://public.test:{feed_server.port}/status.json",
+                    timeout=2,
+                    retries=1,
+                    verify_tls=False,
+                    max_bytes=1024,
+                )
+
+        self.assertEqual(feed_server.requests_seen, ["/status.json"])
+        self.assertEqual(internal_server.requests_seen, [])
+
+    def test_fetch_text_allows_private_redirect_when_explicitly_enabled(self) -> None:
+        with (
+            LocalHttpServer(TextHandler) as internal_server,
+            LocalHttpServer(
+                RedirectHandler,
+                redirect_target=f"http://127.0.0.1:{internal_server.port}/internal-status.json",
+            ) as feed_server,
+            patch("socket.getaddrinfo", side_effect=resolve_public_test_to_loopback),
+        ):
+            body = fetch_text(
+                f"http://public.test:{feed_server.port}/status.json",
+                timeout=2,
+                retries=1,
+                verify_tls=False,
+                max_bytes=1024,
+                allow_private_hosts=True,
+            )
+
+        self.assertEqual(feed_server.requests_seen, ["/status.json"])
+        self.assertEqual(internal_server.requests_seen, ["/internal-status.json"])
+        self.assertIn('"data": []', body)
+
+    def test_fetch_text_preserves_explicit_loopback_redirects(self) -> None:
+        with (
+            LocalHttpServer(TextHandler) as internal_server,
+            LocalHttpServer(
+                RedirectHandler,
+                redirect_target=f"http://127.0.0.1:{internal_server.port}/internal-status.json",
+            ) as feed_server,
+        ):
+            body = fetch_text(
+                f"http://127.0.0.1:{feed_server.port}/status.json",
+                timeout=2,
+                retries=1,
+                verify_tls=False,
+                max_bytes=1024,
+            )
+
+        self.assertEqual(feed_server.requests_seen, ["/status.json"])
+        self.assertEqual(internal_server.requests_seen, ["/internal-status.json"])
+        self.assertIn('"data": []', body)
 
     def test_load_feed_snapshot_can_resolve_status_from_dns(self) -> None:
         config = Config(

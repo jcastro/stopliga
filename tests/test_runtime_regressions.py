@@ -18,6 +18,7 @@ from stopliga.errors import (
     PartialUpdateError,
     ReconciliationRequiredError,
     RemoteRequestError,
+    UnsupportedRouteShapeError,
 )
 from stopliga.feed import compact_history, fetch_text, load_feed_snapshot, validate_feed_freshness
 from stopliga.models import Config, FeedSnapshot, SiteContext, SyncResult
@@ -314,3 +315,116 @@ def test_opnsense_rejects_duplicate_rules_and_aliases():
     ):
         with pytest.raises(DuplicateRouteError):
             client.search_rule("StopLiga")
+
+
+def test_opnsense_http200_application_failure_is_rejected():
+    client = OPNsenseClient(Config(opnsense_host="fw.invalid"))
+    response = MagicMock(status=200, headers={})
+    response.read.side_effect = [b'{"result":"failed"}', b""]
+    client.opener = MagicMock()
+    client.opener.open.return_value.__enter__.return_value = response
+    with pytest.raises(RemoteRequestError, match="reported a failure"):
+        client.request("POST", "/firewall/filter/apply")
+
+
+def test_opnsense_restores_and_verifies_alias_after_rule_failure():
+    from stopliga.opnsense import sync_opnsense
+
+    config = Config(router_type="opnsense", opnsense_host="fw.invalid")
+    client = Mock()
+    client.search_alias.return_value = {"uuid": "a"}
+    client.search_rule.return_value = {"uuid": "r", "enabled": "0"}
+    client.get_alias_item.side_effect = [{"content": "192.0.2.9"}, {"content": "192.0.2.9"}]
+    client.toggle_rule.side_effect = RemoteRequestError("explicit rejection")
+    with pytest.raises(PartialUpdateError) as caught:
+        sync_opnsense(config, feed(), client=client)
+    assert caught.value.rollback_attempted is True
+    assert caught.value.rollback_completed is True
+    assert [call.args[-1] for call in client.update_alias_content.call_args_list] == [["192.0.2.1"], ["192.0.2.9"]]
+    assert client.get_alias_item.call_count == 2
+
+
+def test_omada_pagination_reads_short_pages_when_total_is_known():
+    client = OmadaClient(Config(omada_base_url="https://omada.invalid"))
+    with patch.object(
+        client,
+        "request",
+        side_effect=[
+            {"result": {"data": [{"id": "1"}], "totalRows": 2}},
+            {"result": {"data": [{"id": "2"}], "totalRows": 2}},
+        ],
+    ) as request:
+        assert client._paged_records("/test") == [{"id": "1"}, {"id": "2"}]
+        assert "page=2&" in request.call_args.args[1]
+    with patch.object(client, "request", return_value={"result": {"data": [{"id": "1"}], "totalRows": 2}}):
+        with pytest.raises(RemoteRequestError, match="repeated a page"):
+            client._paged_records("/test")
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_history_download_parses_the_bounded_stream(compressed):
+    payload = {
+        "isBlocked": True,
+        "lastUpdate": "2026-04-23T09:30:00Z",
+        "data": [{"ip": "192.0.2.1", "stateChanges": [{"state": True, "timestamp": "2026-04-23T09:00:00Z"}]}],
+    }
+    body = json.dumps(payload).encode()
+    response = io.BytesIO(gzip.compress(body) if compressed else body)
+    response.headers = {"Content-Encoding": "gzip"} if compressed else {}
+    opener = Mock()
+    opener.open.return_value = response
+    with patch("stopliga.feed.urllib.request.build_opener", return_value=opener):
+        parsed = fetch_text("https://feed.invalid", timeout=1, retries=1, verify_tls=True, max_bytes=1024, history=True)
+    assert parsed == payload
+
+
+def test_compressed_history_expansion_cannot_bypass_limit():
+    body = json.dumps({"data": [], "padding": "x" * 20000}).encode()
+    response = io.BytesIO(gzip.compress(body))
+    response.headers = {"Content-Encoding": "gzip"}
+    opener = Mock()
+    opener.open.return_value = response
+    with (
+        patch("stopliga.feed.urllib.request.build_opener", return_value=opener),
+        pytest.raises(NetworkError, match="size limit"),
+    ):
+        fetch_text("https://feed.invalid", timeout=1, retries=1, verify_tls=True, max_bytes=1024, history=True)
+
+
+def test_omada_shared_group_is_rejected_before_any_mutation():
+    config = Config(router_type="omada", omada_base_url="https://omada.invalid")
+    driver = OmadaRouterDriver(config)
+    client = Mock()
+    client.resolve_site.return_value = Mock(site_id="site-1")
+    client.list_groups.return_value = [
+        {"groupId": "shared", "name": "StopLiga [001]", "type": 0, "ipList": [{"ip": "192.0.2.9", "mask": 32}]}
+    ]
+    client.list_policy_routes.return_value = [
+        {"id": "ours", "name": "StopLiga", "status": True, "destinationIds": ["shared"]},
+        {"id": "manual", "name": "Manual", "status": True, "destinationIds": ["shared"]},
+    ]
+    with (
+        patch("stopliga.routers.omada.OmadaClient", return_value=client),
+        patch.object(driver, "_resolve_target"),
+        patch.object(driver, "_resolve_source_network_ids", return_value=["lan"]),
+        pytest.raises(UnsupportedRouteShapeError, match="another route"),
+    ):
+        driver.sync(feed(), {}, guard_writer=Mock(), guard_clearer=Mock())
+    client.update_group.assert_not_called()
+    client.create_group.assert_not_called()
+
+
+def test_notification_delay_cannot_leave_route_enabled_after_closing(tmp_path):
+    from dataclasses import replace
+
+    service = StopLigaService(config_in(tmp_path, active_hours="20:00-21:00"))
+    enabled = result()
+    disabled = replace(enabled, desired_enabled=False)
+    with (
+        patch.object(service.schedule, "is_active", side_effect=[True, True, True, False]),
+        patch("stopliga.service.load_feed_snapshot", return_value=feed()),
+        patch.object(service, "_run_router_sync", side_effect=[enabled, disabled]) as sync,
+    ):
+        assert service.run_once().desired_enabled is False
+    assert sync.call_count == 2
+    assert sync.call_args.args[0].desired_enabled is False

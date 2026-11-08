@@ -14,7 +14,10 @@ from tests.test_integration import FakeState, TestServer  # noqa: E402
 
 
 def command(args, *, check=True):
-    return subprocess.run(args, check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(args, check=False, text=True, capture_output=True)
+    if check and result.returncode:
+        raise RuntimeError(f"Command failed ({result.returncode}): {result.stdout}{result.stderr}")
+    return result
 
 
 def wait_for(predicate, detail):

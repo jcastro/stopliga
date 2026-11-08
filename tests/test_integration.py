@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import json
 import shutil
 import ssl
@@ -117,7 +118,12 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status: int, payload: Any, *, headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload).encode("utf-8")
+        compress = self.path.startswith("/feed/") and "gzip" in self.headers.get("Accept-Encoding", "")
+        if compress:
+            body = gzip.compress(body)
         self.send_response(status)
+        if compress:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         if headers:

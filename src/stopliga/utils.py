@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from functools import lru_cache
 import ipaddress
 import json
@@ -150,3 +151,41 @@ def shorten_json(data: Any, limit: int = 4000) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "\n... (truncated)"
+
+
+class LimitedReader(io.RawIOBase):
+    """Bound a streaming binary input, including decompressed data."""
+
+    def __init__(self, stream: Any, max_bytes: int, content_length: str | None = None):
+        super().__init__()
+        self.stream = stream
+        self.remaining = max_bytes
+        self.position = 0
+        if content_length is not None:
+            try:
+                if int(content_length) > max_bytes:
+                    raise ValueError("Response exceeds its size limit")
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Invalid or oversized Content-Length") from exc
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            return b""
+        amount = self.remaining + 1 if size < 0 else min(size, self.remaining + 1)
+        data = self.stream.read(amount)
+        if len(data) > self.remaining:
+            raise ValueError("Response exceeds its size limit")
+        self.remaining -= len(data)
+        self.position += len(data)
+        return data
+
+    def readinto(self, buffer: Any) -> int:
+        data = self.read(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.position

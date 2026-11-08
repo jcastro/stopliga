@@ -455,6 +455,17 @@ class StopLigaService:
                         )
                 except StopLigaError as exc:
                     log_event(self.logger, logging.WARNING, "notification_failed", error=exc)
+                # Notification retries can cross a closing boundary as well.
+                if schedule_active and not self.schedule.is_active():
+                    result = self._run_router_sync(inactive_snapshot(), self._load_bootstrap_guard())
+                    self._write_state(
+                        status="dry_run" if result.dry_run else "success",
+                        result=result,
+                        preserve_block_status=True,
+                        sync_id=sync_id,
+                        previous_state=self._load_runtime_state(),
+                    )
+                    self._write_bootstrap_guard(result)
                 log_event(
                     self.logger,
                     logging.INFO,

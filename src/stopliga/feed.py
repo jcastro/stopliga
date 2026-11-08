@@ -10,10 +10,11 @@ import json
 import logging
 import socket
 import ssl
+import zlib
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal, overload
 from urllib.parse import urlparse, urlunparse
 
 from .errors import ConfigError, InvalidFeedError, NetworkError
@@ -27,6 +28,7 @@ from .utils import (
     IpTokenSortKey,
     make_ssl_context,
     read_limited,
+    LimitedReader,
     sleep_with_backoff,
     stable_hash,
     sort_ip_tokens,
@@ -332,6 +334,7 @@ def parse_ip_list(
     return ordered, raw_lines, invalid
 
 
+@overload
 def fetch_text(
     url: str,
     *,
@@ -341,7 +344,35 @@ def fetch_text(
     max_bytes: int,
     allow_private_hosts: bool = False,
     ca_file: Any = None,
-) -> str:
+    history: Literal[True],
+) -> dict[str, Any]: ...
+
+
+@overload
+def fetch_text(
+    url: str,
+    *,
+    timeout: float,
+    retries: int,
+    verify_tls: bool,
+    max_bytes: int,
+    allow_private_hosts: bool = False,
+    ca_file: Any = None,
+    history: Literal[False] = False,
+) -> str: ...
+
+
+def fetch_text(
+    url: str,
+    *,
+    timeout: float,
+    retries: int,
+    verify_tls: bool,
+    max_bytes: int,
+    allow_private_hosts: bool = False,
+    ca_file: Any = None,
+    history: bool = False,
+) -> str | dict[str, Any]:
     """Fetch a text payload over HTTP(S) with retries and explicit TLS control."""
 
     logger = logging.getLogger("stopliga.feed")
@@ -364,6 +395,17 @@ def fetch_text(
         )
         try:
             with opener.open(request, timeout=timeout) as response:
+                if history:
+                    try:
+                        source = LimitedReader(response, max_bytes, response.headers.get("Content-Length"))
+                        if response.headers.get("Content-Encoding", "").lower() == "gzip":
+                            with gzip.GzipFile(fileobj=source) as compressed:
+                                return compact_history(LimitedReader(compressed, max_bytes))
+                        return compact_history(source)
+                    except ValueError as exc:
+                        raise NetworkError(f"Unable to fetch {safe_url}: {exc}") from exc
+                    except (EOFError, gzip.BadGzipFile, zlib.error) as exc:
+                        raise NetworkError(f"Invalid compressed feed from {safe_url}") from exc
                 try:
                     body = read_limited(
                         response,
@@ -376,7 +418,7 @@ def fetch_text(
                     try:
                         with gzip.GzipFile(fileobj=io.BytesIO(body)) as compressed:
                             body = read_limited(compressed, max_bytes=max_bytes)
-                    except (OSError, EOFError, ValueError) as exc:
+                    except (OSError, EOFError, ValueError, zlib.error) as exc:
                         raise NetworkError(f"Invalid or oversized compressed feed from {safe_url}") from exc
                 try:
                     return body.decode("utf-8")
@@ -465,8 +507,9 @@ def _load_structured_hayahora_status(config: Config) -> dict[str, Any]:
         else config.max_response_bytes,
         allow_private_hosts=config.feed_allow_private_hosts,
         ca_file=config.feed_ca_file,
+        history=True,
     )
-    payload = compact_history(raw_status_text)
+    payload = raw_status_text if isinstance(raw_status_text, dict) else compact_history(raw_status_text)
     if isinstance(payload.get("data"), list):
         validate_feed_freshness(payload, config.feed_max_age_seconds)
     elif status_url == HAYAHORA_STATUS_JSON_URL:
@@ -494,8 +537,11 @@ def validate_feed_freshness(payload: dict[str, Any], max_age_seconds: int) -> No
                 raise InvalidFeedError("Status feed contains a future state change")
 
 
-def compact_history(raw_text: str) -> dict[str, Any]:
+def compact_history(raw_text: Any) -> dict[str, Any]:
     """Parse history events incrementally, retaining only each entry's latest change."""
+    source = io.BytesIO(raw_text.encode("utf-8")) if isinstance(raw_text, str) else raw_text
+    entry_keys = {"data.item.ip": "ip", "data.item.isp": "isp", "data.item.description": "description"}
+    change_keys = {"data.item.stateChanges.item.state": "state", "data.item.stateChanges.item.timestamp": "timestamp"}
     payload: dict[str, Any] = {}
     entries: list[dict[str, Any]] = []
     entry: dict[str, Any] = {}
@@ -505,7 +551,7 @@ def compact_history(raw_text: str) -> dict[str, Any]:
     data_seen = False
     root_seen = False
     try:
-        for prefix, event, value in ijson.parse(io.BytesIO(raw_text.encode("utf-8"))):
+        for prefix, event, value in ijson.parse(source):
             if prefix == "" and event == "start_map":
                 if root_seen:
                     raise InvalidFeedError("Multiple status objects are not supported")
@@ -525,7 +571,7 @@ def compact_history(raw_text: str) -> dict[str, Any]:
             elif prefix == "data.item" and event == "start_map":
                 entry, latest, latest_stamp = {}, None, None
             elif prefix in {"data.item.ip", "data.item.isp", "data.item.description"} and event == "string":
-                entry[prefix.rsplit(".", 1)[1]] = value
+                entry[entry_keys[prefix]] = value
             elif prefix == "data.item.stateChanges.item" and event == "start_map":
                 change = {}
             elif prefix in {"data.item.stateChanges.item.state", "data.item.stateChanges.item.timestamp"} and event in {
@@ -534,7 +580,7 @@ def compact_history(raw_text: str) -> dict[str, Any]:
                 "null",
                 "number",
             }:
-                change[prefix.rsplit(".", 1)[1]] = value
+                change[change_keys[prefix]] = value
             elif prefix == "data.item.stateChanges.item" and event == "end_map":
                 if "state" in change:
                     stamp = _parse_hayahora_timestamp(change.get("timestamp"))
@@ -545,7 +591,7 @@ def compact_history(raw_text: str) -> dict[str, Any]:
                 entries.append(entry)
                 if len(entries) > 100_000:
                     raise InvalidFeedError("Status feed exceeds the 100000-entry safety ceiling")
-    except (ValueError, UnicodeError, ijson.JSONError) as exc:
+    except (UnicodeError, ijson.JSONError) as exc:
         raise InvalidFeedError("Status feed is not valid JSON") from exc
     if not root_seen:
         raise InvalidFeedError("Status feed must be a JSON object")

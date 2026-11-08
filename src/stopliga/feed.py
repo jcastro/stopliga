@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import heapq
+import gzip
+import io
+import ijson  # type: ignore[import-untyped]
 import json
 import logging
 import socket
 import ssl
+import zlib
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal, overload
 from urllib.parse import urlparse, urlunparse
 
 from .errors import ConfigError, InvalidFeedError, NetworkError
@@ -24,12 +28,13 @@ from .utils import (
     IpTokenSortKey,
     make_ssl_context,
     read_limited,
+    LimitedReader,
     sleep_with_backoff,
     stable_hash,
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.30"
+DEFAULT_USER_AGENT = "stopliga/0.1.31"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 # Hayahora's canonical JSON feed is historical and keeps growing over time,
@@ -329,6 +334,7 @@ def parse_ip_list(
     return ordered, raw_lines, invalid
 
 
+@overload
 def fetch_text(
     url: str,
     *,
@@ -338,7 +344,35 @@ def fetch_text(
     max_bytes: int,
     allow_private_hosts: bool = False,
     ca_file: Any = None,
-) -> str:
+    history: Literal[True],
+) -> dict[str, Any]: ...
+
+
+@overload
+def fetch_text(
+    url: str,
+    *,
+    timeout: float,
+    retries: int,
+    verify_tls: bool,
+    max_bytes: int,
+    allow_private_hosts: bool = False,
+    ca_file: Any = None,
+    history: Literal[False] = False,
+) -> str: ...
+
+
+def fetch_text(
+    url: str,
+    *,
+    timeout: float,
+    retries: int,
+    verify_tls: bool,
+    max_bytes: int,
+    allow_private_hosts: bool = False,
+    ca_file: Any = None,
+    history: bool = False,
+) -> str | dict[str, Any]:
     """Fetch a text payload over HTTP(S) with retries and explicit TLS control."""
 
     logger = logging.getLogger("stopliga.feed")
@@ -356,10 +390,22 @@ def fetch_text(
             headers={
                 "Accept": "application/json, text/plain;q=0.9, */*;q=0.1",
                 "User-Agent": DEFAULT_USER_AGENT,
+                "Accept-Encoding": "gzip",
             },
         )
         try:
             with opener.open(request, timeout=timeout) as response:
+                if history:
+                    try:
+                        source = LimitedReader(response, max_bytes, response.headers.get("Content-Length"))
+                        if response.headers.get("Content-Encoding", "").lower() == "gzip":
+                            with gzip.GzipFile(fileobj=source) as compressed:
+                                return compact_history(LimitedReader(compressed, max_bytes))
+                        return compact_history(source)
+                    except ValueError as exc:
+                        raise NetworkError(f"Unable to fetch {safe_url}: {exc}") from exc
+                    except (EOFError, gzip.BadGzipFile, zlib.error) as exc:
+                        raise NetworkError(f"Invalid compressed feed from {safe_url}") from exc
                 try:
                     body = read_limited(
                         response,
@@ -368,8 +414,18 @@ def fetch_text(
                     )
                 except ValueError as exc:
                     raise NetworkError(f"Unable to fetch {safe_url}: {exc}") from exc
-                return body.decode("utf-8", errors="replace")
+                if response.headers.get("Content-Encoding", "").lower() == "gzip":
+                    try:
+                        with gzip.GzipFile(fileobj=io.BytesIO(body)) as compressed:
+                            body = read_limited(compressed, max_bytes=max_bytes)
+                    except (OSError, EOFError, ValueError, zlib.error) as exc:
+                        raise NetworkError(f"Invalid or oversized compressed feed from {safe_url}") from exc
+                try:
+                    return body.decode("utf-8")
+                except UnicodeError as exc:
+                    raise InvalidFeedError("Feed is not valid UTF-8") from exc
         except urllib.error.HTTPError as exc:
+            exc.close()
             last_error = exc
             retryable_http = exc.code in {408, 429, 500, 502, 503, 504}
             if retryable_http and attempt < retries:
@@ -451,15 +507,96 @@ def _load_structured_hayahora_status(config: Config) -> dict[str, Any]:
         else config.max_response_bytes,
         allow_private_hosts=config.feed_allow_private_hosts,
         ca_file=config.feed_ca_file,
+        history=True,
     )
+    payload = raw_status_text if isinstance(raw_status_text, dict) else compact_history(raw_status_text)
+    if isinstance(payload.get("data"), list):
+        validate_feed_freshness(payload, config.feed_max_age_seconds)
+    elif status_url == HAYAHORA_STATUS_JSON_URL:
+        raise InvalidFeedError("Hayahora status payload must contain a data list")
+    return payload
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def validate_feed_freshness(payload: dict[str, Any], max_age_seconds: int) -> None:
+    reference = _parse_hayahora_timestamp(payload.get("lastUpdate"))
+    if reference is None:
+        raise InvalidFeedError("Status feed requires a valid lastUpdate timestamp")
+    age = (_utcnow() - reference).total_seconds()
+    if age > max_age_seconds or age < -300:
+        raise InvalidFeedError("Status feed is stale or its lastUpdate is in the future; preserving remote state")
+    for entry in payload.get("data", []):
+        if not isinstance(entry, dict):
+            continue
+        for change in entry.get("stateChanges", []):
+            stamp = _parse_hayahora_timestamp(change.get("timestamp")) if isinstance(change, dict) else None
+            if stamp is not None and stamp > reference + timedelta(seconds=300):
+                raise InvalidFeedError("Status feed contains a future state change")
+
+
+def compact_history(raw_text: Any) -> dict[str, Any]:
+    """Parse history events incrementally, retaining only each entry's latest change."""
+    source = io.BytesIO(raw_text.encode("utf-8")) if isinstance(raw_text, str) else raw_text
+    entry_keys = {"data.item.ip": "ip", "data.item.isp": "isp", "data.item.description": "description"}
+    change_keys = {"data.item.stateChanges.item.state": "state", "data.item.stateChanges.item.timestamp": "timestamp"}
+    payload: dict[str, Any] = {}
+    entries: list[dict[str, Any]] = []
+    entry: dict[str, Any] = {}
+    change: dict[str, Any] = {}
+    latest: dict[str, Any] | None = None
+    latest_stamp: datetime | None = None
+    data_seen = False
+    root_seen = False
     try:
-        payload = json.loads(raw_status_text)
-    except json.JSONDecodeError as exc:
-        raise InvalidFeedError("Hayahora active destination mode requires a JSON status payload") from exc
-    if not isinstance(payload, dict):
-        raise InvalidFeedError("Hayahora active destination mode requires a JSON object status payload")
-    if not isinstance(payload.get("data"), list):
-        raise InvalidFeedError("Hayahora active destination mode requires a status payload with a data list")
+        for prefix, event, value in ijson.parse(source):
+            if prefix == "" and event == "start_map":
+                if root_seen:
+                    raise InvalidFeedError("Multiple status objects are not supported")
+                root_seen = True
+            elif prefix == "" and event == "map_key":
+                if value in payload or (value == "data" and data_seen):
+                    raise InvalidFeedError("Duplicate status feed keys are not supported")
+            elif prefix in {"lastUpdate", "isBlocked", "blocked", "state"} and event in {
+                "string",
+                "boolean",
+                "null",
+                "number",
+            }:
+                payload[prefix] = value
+            elif prefix == "data" and event == "start_array":
+                data_seen = True
+            elif prefix == "data.item" and event == "start_map":
+                entry, latest, latest_stamp = {}, None, None
+            elif prefix in {"data.item.ip", "data.item.isp", "data.item.description"} and event == "string":
+                entry[entry_keys[prefix]] = value
+            elif prefix == "data.item.stateChanges.item" and event == "start_map":
+                change = {}
+            elif prefix in {"data.item.stateChanges.item.state", "data.item.stateChanges.item.timestamp"} and event in {
+                "string",
+                "boolean",
+                "null",
+                "number",
+            }:
+                change[change_keys[prefix]] = value
+            elif prefix == "data.item.stateChanges.item" and event == "end_map":
+                if "state" in change:
+                    stamp = _parse_hayahora_timestamp(change.get("timestamp"))
+                    if latest is None or (stamp is not None and (latest_stamp is None or stamp >= latest_stamp)):
+                        latest, latest_stamp = change, stamp
+            elif prefix == "data.item" and event == "end_map":
+                entry["stateChanges"] = [latest] if latest is not None else []
+                entries.append(entry)
+                if len(entries) > 100_000:
+                    raise InvalidFeedError("Status feed exceeds the 100000-entry safety ceiling")
+    except (UnicodeError, ijson.JSONError) as exc:
+        raise InvalidFeedError("Status feed is not valid JSON") from exc
+    if not root_seen:
+        raise InvalidFeedError("Status feed must be a JSON object")
+    if data_seen:
+        payload["data"] = entries
     return payload
 
 
@@ -593,7 +730,39 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
         "feed_check",
         status_url=_safe_log_url(config.status_url),
     )
-    status_payload = _load_structured_hayahora_status(config)
+    dns_host = _parse_dns_feed_host(config.status_url)
+    if dns_host is not None and dns_host != HAYAHORA_DNS_STATUS_HOST:
+        status_payload, is_blocked = load_status_snapshot(config)
+    else:
+        status_payload = _load_structured_hayahora_status(config)
+    if not isinstance(status_payload.get("data"), list):
+        raw_status, is_blocked = parse_status_payload_value(status_payload)
+        text = fetch_text(
+            config.ip_list_url,
+            timeout=config.request_timeout,
+            retries=config.retries,
+            verify_tls=config.feed_verify_tls,
+            max_bytes=config.max_response_bytes,
+            allow_private_hosts=config.feed_allow_private_hosts,
+            ca_file=config.feed_ca_file,
+        )
+        destinations, raw_lines, invalid_entries = parse_ip_list(
+            text, policy=config.invalid_entry_policy, max_destinations=config.max_destinations
+        )
+        if is_blocked and not destinations and config.strict_feed_consistency:
+            raise InvalidFeedError("Blocking is active but the legacy IP list is empty")
+        return FeedSnapshot(
+            is_blocked,
+            bool(is_blocked and destinations),
+            destinations,
+            raw_status,
+            raw_lines,
+            len(destinations),
+            len(invalid_entries),
+            invalid_entries,
+            stable_hash(destinations),
+            stable_hash({"status": raw_status, "destinations": destinations}),
+        )
     destinations, raw_lines, invalid_entries = extract_hayahora_active_ips(
         status_payload,
         isp=config.hayahora_isp,
@@ -614,7 +783,7 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
         raw_status = dict(raw_status)
         raw_status.setdefault("activeDestinationCount", len(destinations))
         raw_status.setdefault("inspectedEntryCount", raw_lines)
-    desired_enabled = is_blocked
+    desired_enabled = bool(is_blocked and destinations)
     snapshot = FeedSnapshot(
         is_blocked=is_blocked,
         desired_enabled=desired_enabled,

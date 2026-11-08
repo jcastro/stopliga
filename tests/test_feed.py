@@ -654,7 +654,7 @@ class FeedLoadingTests(unittest.TestCase):
         self.assertEqual(snapshot.destinations, ["104.16.93.114"])
         self.assertEqual(snapshot.raw_status["strategy"], "hayahora-site-hero")
 
-    def test_load_feed_snapshot_decodes_structured_hayahora_json_once(self) -> None:
+    def test_load_feed_snapshot_streams_structured_history_without_full_json_load(self) -> None:
         config = Config(retries=1)
         payload = """
             {
@@ -683,7 +683,7 @@ class FeedLoadingTests(unittest.TestCase):
         ):
             snapshot = load_feed_snapshot(config)
 
-        self.assertEqual(loads_calls, 1)
+        self.assertEqual(loads_calls, 0)
         self.assertEqual(snapshot.destinations, ["188.114.96.5"])
 
     def test_load_feed_snapshot_handles_blocked_then_unblocked_payloads(self) -> None:

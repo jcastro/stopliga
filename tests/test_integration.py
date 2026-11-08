@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import json
 import shutil
 import ssl
@@ -117,7 +118,12 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status: int, payload: Any, *, headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload).encode("utf-8")
+        compress = self.path.startswith("/feed/") and "gzip" in self.headers.get("Accept-Encoding", "")
+        if compress:
+            body = gzip.compress(body)
         self.send_response(status)
+        if compress:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         if headers:
@@ -168,6 +174,9 @@ class FakeUniFiHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/gotify/message":
+            if self.headers.get("X-Gotify-Key") != "gotify-token":
+                self._send_json(403, {"error": "missing Gotify token"})
+                return
             payload = self._read_json()
             self.state.gotify_messages.append(payload)
             self._send_json(200, {"id": len(self.state.gotify_messages)})
@@ -590,6 +599,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                 retries: int,
                 verify_tls: bool,
                 ca_file: Any,
+                headers: dict[str, str] | None = None,
             ) -> None:
                 raise NetworkError("gotify down")
 
@@ -1164,7 +1174,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                 1,
             )
 
-    def test_bootstrap_guard_is_persisted_before_state_write(self) -> None:
+    def test_unwritable_state_prevents_remote_bootstrap(self) -> None:
         state = FakeState(
             status_payload={"isBlocked": True},
             ip_lines=["192.0.2.10"],
@@ -1186,10 +1196,10 @@ class ServiceIntegrationTests(unittest.TestCase):
             )
             with self.assertRaises(StateError):
                 StopLigaService(config).run_once()
-            guard_payload = json.loads((Path(tmpdir) / "bootstrap_guard.json").read_text(encoding="utf-8"))
-            self.assertEqual(guard_payload["bootstrap_source"], "auto-bootstrap")
-            self.assertEqual(guard_payload["bootstrap_network_id"], "vpn-network-1")
-            self.assertEqual(guard_payload["bootstrap_target_macs"], ["__all_clients__"])
+            self.assertIsNone(state.route)
+            self.assertEqual(
+                json.loads((Path(tmpdir) / "bootstrap_guard.json").read_text())["bootstrap_source"], "auto-bootstrap"
+            )
 
     def test_linked_list_rejects_wrong_ip_family(self) -> None:
         state = FakeState(
@@ -1371,7 +1381,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             state_payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
             self.assertTrue(state_payload["reconciliation_required"])
 
-    def test_failed_update_before_any_completed_step_does_not_require_reconciliation(self) -> None:
+    def test_failed_write_without_verified_outcome_requires_reconciliation(self) -> None:
         state = FakeState(
             status_payload={"blocked": True},
             ip_lines=["192.0.2.10"],
@@ -1400,7 +1410,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                 StopLigaService(config).run_once()
             self.assertEqual(ctx.exception.completed_stages, ())
             state_payload = json.loads((Path(tmpdir) / "state.json").read_text(encoding="utf-8"))
-            self.assertFalse(state_payload["reconciliation_required"])
+            self.assertTrue(state_payload["reconciliation_required"])
 
     def test_reconciliation_required_state_blocks_future_writes(self) -> None:
         state = FakeState(
@@ -1640,6 +1650,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                 retries: int,
                 verify_tls: bool,
                 ca_file: Any,
+                headers: dict[str, str] | None = None,
             ) -> None:
                 state.telegram_messages.append({"url": url, **payload})
 
@@ -1694,6 +1705,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                 retries: int,
                 verify_tls: bool,
                 ca_file: Any,
+                headers: dict[str, str] | None = None,
             ) -> dict[str, Any]:
                 state.telegram_messages.append({"url": url, **payload})
                 return {"ok": True, "result": {"message_id": 101}}
@@ -1749,6 +1761,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                 retries: int,
                 verify_tls: bool,
                 ca_file: Any,
+                headers: dict[str, str] | None = None,
             ) -> None:
                 state.telegram_messages.append({"url": url, **payload})
 
@@ -1813,6 +1826,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                 retries: int,
                 verify_tls: bool,
                 ca_file: Any,
+                headers: dict[str, str] | None = None,
             ) -> dict[str, Any]:
                 calls.append({"url": url, **payload})
                 return {"ok": True, "result": {"message_id": payload["message_id"]}}
@@ -1934,6 +1948,7 @@ class ServiceIntegrationTests(unittest.TestCase):
                 retries: int,
                 verify_tls: bool,
                 ca_file: Any,
+                headers: dict[str, str] | None = None,
             ) -> None:
                 if "gotify" in url:
                     raise NetworkError("gotify down")
@@ -2083,8 +2098,14 @@ class OPNsenseTests(unittest.TestCase):
         with (
             patch("stopliga.opnsense.OPNsenseClient.authenticate", return_value=None),
             patch("stopliga.opnsense.OPNsenseClient.search_alias", return_value={"uuid": "alias-1"}),
-            patch("stopliga.opnsense.OPNsenseClient.get_alias_item", return_value=alias_record),
-            patch("stopliga.opnsense.OPNsenseClient.search_rule", return_value={"uuid": "rule-1", "enabled": "0"}),
+            patch(
+                "stopliga.opnsense.OPNsenseClient.get_alias_item",
+                side_effect=[alias_record, {"content": "192.0.2.10\n198.51.100.0/24"}],
+            ),
+            patch(
+                "stopliga.opnsense.OPNsenseClient.search_rule",
+                side_effect=[{"uuid": "rule-1", "enabled": "0"}, {"uuid": "rule-1", "enabled": "1"}],
+            ),
             patch("stopliga.opnsense.OPNsenseClient.update_alias_content") as update_alias_content,
             patch("stopliga.opnsense.OPNsenseClient.reconfigure_alias") as reconfigure_alias,
             patch("stopliga.opnsense.OPNsenseClient.toggle_rule") as toggle_rule,
@@ -2116,7 +2137,10 @@ class OPNsenseTests(unittest.TestCase):
             patch("stopliga.opnsense.OPNsenseClient.authenticate", return_value=None),
             patch("stopliga.opnsense.OPNsenseClient.search_alias", return_value={"uuid": "alias-1"}),
             patch("stopliga.opnsense.OPNsenseClient.get_alias_item", return_value=alias_record),
-            patch("stopliga.opnsense.OPNsenseClient.search_rule", return_value={"uuid": "rule-1", "enabled": "1"}),
+            patch(
+                "stopliga.opnsense.OPNsenseClient.search_rule",
+                side_effect=[{"uuid": "rule-1", "enabled": "1"}, {"uuid": "rule-1", "enabled": "0"}],
+            ),
             patch("stopliga.opnsense.OPNsenseClient.update_alias_content") as update_alias_content,
             patch("stopliga.opnsense.OPNsenseClient.reconfigure_alias") as reconfigure_alias,
             patch("stopliga.opnsense.OPNsenseClient.toggle_rule") as toggle_rule,
@@ -2283,4 +2307,5 @@ class OPNsenseTests(unittest.TestCase):
                 result = StopLigaService(config).run_once()
 
         self.assertEqual(result.mode, "opnsense")
-        sync_opnsense_mock.assert_called_once_with(config, feed_snapshot)
+        self.assertEqual(sync_opnsense_mock.call_args.args, (config, feed_snapshot))
+        self.assertIsNotNone(sync_opnsense_mock.call_args.kwargs["client"])

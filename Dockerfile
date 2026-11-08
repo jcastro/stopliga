@@ -1,5 +1,5 @@
-ARG PYTHON_BASE=python:3.12-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286
-ARG VERSION=0.1.30
+ARG PYTHON_BASE=python:3.12-alpine@sha256:e064671ca452259bab50e8e2c7bd896e39e9a343bb06ca25234adf6fe18d0fc7
+ARG VERSION=0.1.31
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga
@@ -22,10 +22,16 @@ COPY src ./src
 RUN pip install --upgrade pip==26.3 setuptools==82.0.1 wheel==0.46.3 \
     && pip install --no-cache-dir .
 
+RUN rm -rf /opt/venv/lib/python*/site-packages/pip* \
+    /opt/venv/lib/python*/site-packages/setuptools* \
+    /opt/venv/lib/python*/site-packages/wheel* \
+    /opt/venv/bin/pip /opt/venv/bin/pip3 /opt/venv/bin/pip3.* \
+    && find /opt/venv -type d -name '__pycache__' -prune -exec rm -rf {} +
+
 
 FROM ${PYTHON_BASE} AS runtime
 
-ARG VERSION=0.1.30
+ARG VERSION=0.1.31
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga
@@ -47,23 +53,18 @@ LABEL org.opencontainers.image.title="StopLiga" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.licenses="MIT"
 
-RUN groupadd --system --gid 10001 stopliga \
-    && useradd --system --uid 10001 --gid stopliga --create-home --home-dir /home/stopliga stopliga \
-    && mkdir -p /data \
-    && chown -R stopliga:stopliga /data /home/stopliga
+RUN addgroup -S -g 10001 stopliga \
+    && adduser -S -D -u 10001 -G stopliga -h /home/stopliga stopliga \
+    && mkdir -p /data /home/stopliga \
+    && chown stopliga:stopliga /data /home/stopliga
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --chmod=0555 docker/entrypoint.py /usr/local/bin/docker-entrypoint.py
 
-RUN rm -rf /opt/venv/lib/python*/site-packages/pip* \
-    /opt/venv/lib/python*/site-packages/setuptools* \
-    /opt/venv/lib/python*/site-packages/wheel* \
-    /opt/venv/bin/pip /opt/venv/bin/pip3 /opt/venv/bin/pip3.* \
-    && find /opt/venv -type d -name '__pycache__' -prune -exec rm -rf {} +
-
+USER 10001:10001
 WORKDIR /app
 VOLUME ["/data"]
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 CMD ["stopliga", "--healthcheck"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 CMD ["/opt/venv/bin/python", "-m", "stopliga.healthcheck"]
 
 ENTRYPOINT ["/opt/venv/bin/python", "-I", "/usr/local/bin/docker-entrypoint.py"]

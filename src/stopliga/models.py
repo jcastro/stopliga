@@ -47,6 +47,7 @@ class Config:
     opnsense_verify_tls: bool = True
     opnsense_ca_file: Path | None = None
     opnsense_alias_name: str | None = None
+    feed_max_age_seconds: int = 3600
     feed_verify_tls: bool = True
     feed_ca_file: Path | None = None
     feed_allow_private_hosts: bool = False
@@ -246,6 +247,8 @@ class StateSnapshot:
     rollback_error: str | None = None
     reconciliation_required: bool = False
     last_is_blocked: bool | None = None
+    notification_pending: dict[str, bool] = field(default_factory=dict)
+    last_notified_blocked: dict[str, bool] = field(default_factory=dict)
     last_gotify_message_id: int | None = None
     last_ntfy_message_id: str | None = None
     last_telegram_message_id: int | None = None

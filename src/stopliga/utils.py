@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import io
+from functools import lru_cache
 import ipaddress
 import json
 import random
@@ -93,12 +95,19 @@ def sort_canonical_ip_tokens(values: Iterable[str]) -> list[str]:
 
 
 def make_ssl_context(*, verify: bool, ca_file: Path | None = None) -> ssl.SSLContext:
-    """Build an SSL context honoring explicit verification settings."""
+    """Reuse bounded trust-store contexts; refresh on CA changes or hourly."""
+    stamp = ca_file.stat().st_mtime_ns if ca_file else 0
+    return _ssl_context(verify, str(ca_file) if ca_file else None, stamp, int(time.monotonic() // 3600))
 
-    context = ssl.create_default_context(cafile=str(ca_file) if ca_file else None)
-    if not verify:
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+
+@lru_cache(maxsize=8)
+def _ssl_context(verify: bool, ca_file: str | None, stamp: int, epoch: int) -> ssl.SSLContext:
+    del stamp, epoch
+    if verify:
+        return ssl.create_default_context(cafile=ca_file)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
     return context
 
 
@@ -142,3 +151,41 @@ def shorten_json(data: Any, limit: int = 4000) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "\n... (truncated)"
+
+
+class LimitedReader(io.RawIOBase):
+    """Bound a streaming binary input, including decompressed data."""
+
+    def __init__(self, stream: Any, max_bytes: int, content_length: str | None = None):
+        super().__init__()
+        self.stream = stream
+        self.remaining = max_bytes
+        self.position = 0
+        if content_length is not None:
+            try:
+                if int(content_length) > max_bytes:
+                    raise ValueError("Response exceeds its size limit")
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Invalid or oversized Content-Length") from exc
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            return b""
+        amount = self.remaining + 1 if size < 0 else min(size, self.remaining + 1)
+        data = self.stream.read(amount)
+        if len(data) > self.remaining:
+            raise ValueError("Response exceeds its size limit")
+        self.remaining -= len(data)
+        self.position += len(data)
+        return data
+
+    def readinto(self, buffer: Any) -> int:
+        data = self.read(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.position

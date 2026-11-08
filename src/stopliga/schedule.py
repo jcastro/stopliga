@@ -62,7 +62,14 @@ class ActiveSchedule:
         if not self.configured:
             return interval
         now = datetime.now(timezone.utc)
-        return min(interval, 60 - now.second - now.microsecond / 1_000_000)
+        active = self.is_active(now)
+        cursor = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        end = now + timedelta(seconds=min(interval, 8 * 86400))
+        while cursor <= end:
+            if self.is_active(cursor) != active:
+                return max(0.0, (cursor - now).total_seconds())
+            cursor += timedelta(minutes=1)
+        return interval
 
 
 def inactive_snapshot() -> FeedSnapshot:

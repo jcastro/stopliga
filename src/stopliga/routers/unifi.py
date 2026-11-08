@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import copy
 import http.cookiejar
 import json
 import logging
 import re
 import ssl
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Sequence
@@ -36,7 +39,7 @@ from ..utils import (
     sleep_with_backoff,
     sort_ip_tokens,
 )
-from .base import BootstrapGuardClearer, BootstrapGuardWriter, RouterDriver
+from .base import BeforeWrite, BootstrapGuardClearer, BootstrapGuardWriter, RouterDriver
 
 
 MAC_RE = re.compile(r"^[0-9a-fA-F]{2}([:-]?[0-9a-fA-F]{2}){5}$")
@@ -428,6 +431,7 @@ class UniFiClient:
 
     def __init__(self, config: Config):
         self.config = config
+        self.before_write: Callable[[], None] | None = None
         self.logger = logging.getLogger("stopliga.unifi")
         self.csrf_token: str | None = None
         self.network_prefix: str | None = None
@@ -484,6 +488,8 @@ class UniFiClient:
         """Perform an API request through the selected UniFi transport."""
 
         method_name = method.upper()
+        if method_name not in SAFE_RETRY_METHODS and self.before_write is not None:
+            self.before_write()
         body_bytes = None
         if self.auth_headers is None:
             self.auth_headers = self._build_auth_headers(self.config.api_key)
@@ -530,7 +536,7 @@ class UniFiClient:
             except urllib.error.HTTPError as exc:
                 try:
                     try:
-                        body_bytes = read_limited(
+                        error_bytes = read_limited(
                             exc,
                             max_bytes=min(self.config.max_response_bytes, 256 * 1024),
                             content_length=exc.headers.get("Content-Length") if exc.headers else None,
@@ -538,8 +544,11 @@ class UniFiClient:
                     except ValueError:
                         body = "<oversized error response>"
                     else:
-                        body = body_bytes.decode("utf-8", errors="replace")
+                        body = error_bytes.decode("utf-8", errors="replace")
                     self._update_csrf_token(exc.headers)
+                    if exc.code == 404:
+                        self.network_prefix = None
+                        self.site_context = None
                     if exc.code in {401, 403}:
                         raise AuthenticationError(
                             f"Unauthorized for {method_name} {path}: check UNIFI_API_KEY"
@@ -1259,11 +1268,20 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
                     backend=plan.backend_name,
                     method=method,
                 )
-            client.request(method, endpoint, json_body=payload, expected_statuses=(200, 201, 204))
+            try:
+                client.request(method, endpoint, json_body=payload, expected_statuses=(200, 201, 204))
+            except NetworkError as exc:
+                raise PartialUpdateError(
+                    stage,
+                    tuple(completed_steps + ["uncertain-write"]),
+                    "UniFi write outcome is unknown; reconcile the remote object before retrying",
+                ) from exc
             completed_steps.append(stage)
         current_stage = "verify"
         backend.verify(plan.route_id, plan.desired_destinations, plan.desired_enabled)
     except StopLigaError as exc:
+        if isinstance(exc, PartialUpdateError) and "uncertain-write" in exc.completed_stages:
+            raise
         rollback_attempted = False
         rollback_completed = False
         rollback_error: str | None = None
@@ -1285,6 +1303,7 @@ def apply_plan(client: UniFiClient, backend: BaseRouteBackend, plan: UpdatePlan)
                     client.request(
                         method, endpoint, json_body=payload, expected_statuses=(200, 201, 204), retriable=False
                     )
+                backend.verify(plan.route_id, plan.current_destinations, bool(plan.current_enabled))
                 rollback_completed = True
                 log_event(
                     logger,
@@ -1355,6 +1374,8 @@ class UniFiRouterDriver(RouterDriver):
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging.getLogger("stopliga.service")
+        self._client: UniFiClient | None = None
+        self._client_started = 0.0
 
     @staticmethod
     def _string_tuple(payload: dict[str, object], key: str) -> tuple[str, ...]:
@@ -1440,7 +1461,11 @@ class UniFiRouterDriver(RouterDriver):
         )
 
     def _log_plan_details(self, *, plan: UpdatePlan, pending_manual_review: bool) -> None:
-        added, removed = compute_destination_delta(plan.current_destinations, plan.desired_destinations)
+        added, removed = (
+            ([], [])
+            if not plan.desired_enabled and not plan.desired_destinations
+            else compute_destination_delta(plan.current_destinations, plan.desired_destinations)
+        )
 
         log_event(
             self.logger,
@@ -1502,7 +1527,7 @@ class UniFiRouterDriver(RouterDriver):
                 )
             desired_enabled = False
             if not bootstrap_source:
-                bootstrap_source = "auto-bootstrap"
+                bootstrap_source = str(previous_guard.get("bootstrap_source"))
                 bootstrap_network_id = str(route_record.get("network_id") or "") or None
                 bootstrap_target_macs = self._route_target_macs(route_record)
 
@@ -1599,8 +1624,13 @@ class UniFiRouterDriver(RouterDriver):
         *,
         guard_writer: BootstrapGuardWriter,
         guard_clearer: BootstrapGuardClearer,
+        before_write: BeforeWrite | None = None,
     ) -> SyncResult:
-        client = UniFiClient(self.config)
+        if self._client is None or time.monotonic() - self._client_started > 3600:
+            self._client = UniFiClient(self.config)
+            self._client_started = time.monotonic()
+        client = self._client
+        client.before_write = before_write
         client.authenticate()
         site_context = client.resolve_site_context()
         created = False
@@ -1683,6 +1713,22 @@ class UniFiRouterDriver(RouterDriver):
             try:
                 endpoint, route_record = bootstrap_backend.create_route(preview.payload)
             except StopLigaError as exc:
+                if isinstance(exc, NetworkError):
+                    raise PartialUpdateError(
+                        "route-create",
+                        ("uncertain-write",),
+                        "UniFi route creation outcome is unknown; refusing a second POST",
+                    ) from exc
+                if not isinstance(exc, RemoteRequestError):
+                    raise
+                if not any(
+                    marker in str(exc) for marker in ("returned 400:", "returned 422:", "application-level error")
+                ):
+                    raise PartialUpdateError(
+                        "route-create",
+                        ("uncertain-write",),
+                        "UniFi creation was not explicitly rejected; refusing a second POST",
+                    ) from exc
                 if self._bootstrap_uses_all_clients(preview.source):
                     target_device = client.pick_default_target_device()
                     fallback_payload = dict(preview.payload)
@@ -1702,6 +1748,12 @@ class UniFiRouterDriver(RouterDriver):
                     try:
                         endpoint, route_record = bootstrap_backend.create_route(fallback_payload)
                     except StopLigaError as fallback_exc:
+                        if isinstance(fallback_exc, NetworkError):
+                            raise PartialUpdateError(
+                                "route-create",
+                                ("uncertain-write",),
+                                "UniFi fallback creation outcome is unknown; reconcile before retrying",
+                            ) from fallback_exc
                         guard_clearer()
                         raise RouteNotFoundError(
                             f"Route {self.config.route_name!r} not found and bootstrap failed. "

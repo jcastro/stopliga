@@ -120,7 +120,15 @@ jobs:
             echo
             echo "## What's changed"
             echo
-            printf '%s\n' "$changes"
+            if [ -f CHANGELOG.md ]; then
+              awk -v heading="## ${IMAGE_VERSION} " '
+                index($0, heading) == 1 { found=1; next }
+                found && /^## / { exit }
+                found { print }
+              ' CHANGELOG.md
+            else
+              printf '%s\n' "$changes"
+            fi
             if [ -n "$compare_url" ]; then
               echo
               echo "Full diff: ${compare_url}"

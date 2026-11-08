@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 
 from ..models import Config, FeedSnapshot, SyncResult
-from ..opnsense import sync_opnsense
-from .base import BootstrapGuardClearer, BootstrapGuardWriter, RouterDriver
+from ..opnsense import OPNsenseClient, sync_opnsense
+from .base import BeforeWrite, BootstrapGuardClearer, BootstrapGuardWriter, RouterDriver
 
 
-@dataclass(frozen=True)
 class OPNsenseRouterDriver(RouterDriver):
     """RouterDriver adapter for the OPNsense backend."""
 
-    config: Config
-    router_type: str = "opnsense"
+    router_type = "opnsense"
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.client = OPNsenseClient(config)
 
     def sync(
         self,
@@ -23,8 +24,10 @@ class OPNsenseRouterDriver(RouterDriver):
         *,
         guard_writer: BootstrapGuardWriter,
         guard_clearer: BootstrapGuardClearer,
+        before_write: BeforeWrite | None = None,
     ) -> SyncResult:
         del previous_guard
         del guard_writer
         del guard_clearer
-        return sync_opnsense(self.config, feed_snapshot)
+        self.client.before_write = before_write
+        return sync_opnsense(self.config, feed_snapshot, client=self.client)

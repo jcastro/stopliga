@@ -18,8 +18,9 @@ from .errors import (
 from .feed import load_feed_snapshot
 from .logging_utils import log_context, log_event
 from .models import Config, FeedSnapshot, StateSnapshot, SyncResult
-from .notifier import NotificationState, send_notifications, send_startup_notification
+from .notifier import NotificationState, notification_targets, send_notifications, send_startup_notification
 from .routers.factory import create_router_driver
+from .routers.base import RouterDriver
 from .state import StateStore, utcnow_iso
 from .schedule import ActiveSchedule, inactive_snapshot
 
@@ -39,6 +40,8 @@ class StopLigaService:
     def __init__(self, config: Config):
         self.config = config
         self.schedule = ActiveSchedule(config)
+        self._driver: RouterDriver | None = None
+        self._before_write = lambda: None
         self.logger = logging.getLogger("stopliga.service")
         self.state_store = StateStore(config.state_file)
         self.bootstrap_guard_store = StateStore(config.bootstrap_guard_file)
@@ -47,6 +50,9 @@ class StopLigaService:
         try:
             return self.state_store.load()
         except ConfigError as exc:
+            if self.config.dry_run:
+                log_event(self.logger, logging.WARNING, "invalid_state_preserved_in_dry_run", error=exc)
+                return {}
             try:
                 bad_path = self.state_store.quarantine_invalid_file()
             except StateError as quarantine_exc:
@@ -71,6 +77,9 @@ class StopLigaService:
         try:
             guard = self.bootstrap_guard_store.load()
         except ConfigError as exc:
+            if self.config.dry_run:
+                log_event(self.logger, logging.WARNING, "invalid_state_preserved_in_dry_run", error=exc)
+                return {}
             try:
                 bad_path = self.bootstrap_guard_store.quarantine_invalid_file()
             except StateError as quarantine_exc:
@@ -134,29 +143,26 @@ class StopLigaService:
         bootstrap_network_id: str | None,
         bootstrap_target_macs: tuple[str, ...],
     ) -> None:
-        snapshot = StateSnapshot(
-            status="guard",
-            run_mode=self.config.run_mode,
-            route_name=self.config.route_name,
-            site=self.config.site,
-            last_attempt_at=utcnow_iso(),
-            last_success_at=None,
-            last_error=None,
-            last_mode=None,
-            last_sync_id=None,
-            last_route_id=None,
-            last_backend=None,
-            feed_hash=None,
-            destinations_hash=None,
-            changed=False,
-            created=False,
-            dry_run=False,
-            last_is_blocked=None,
-            bootstrap_source=bootstrap_source,
-            bootstrap_network_id=bootstrap_network_id,
-            bootstrap_target_macs=bootstrap_target_macs,
+        if self.config.dry_run:
+            return
+        desired = (bootstrap_source, bootstrap_network_id, bootstrap_target_macs)
+        previous = self.bootstrap_guard_store.load()
+        current = (
+            previous.get("bootstrap_source"),
+            previous.get("bootstrap_network_id"),
+            self._string_tuple(previous, "bootstrap_target_macs"),
         )
-        self.bootstrap_guard_store.write(snapshot)
+        if desired == current:
+            return
+        self.bootstrap_guard_store.write_payload(
+            {
+                "route_name": self.config.route_name,
+                "site": self.config.site,
+                "bootstrap_source": bootstrap_source,
+                "bootstrap_network_id": bootstrap_network_id,
+                "bootstrap_target_macs": list(bootstrap_target_macs),
+            }
+        )
 
     def _write_state(
         self,
@@ -175,6 +181,8 @@ class StopLigaService:
         notification_state: dict[str, object] | None = None,
         preserve_block_status: bool = False,
     ) -> None:
+        if self.config.dry_run:
+            return
         now = utcnow_iso()
         previous = previous_state if previous_state is not None else self._load_runtime_state()
         previous_failures = previous.get("consecutive_failures", 0)
@@ -211,6 +219,8 @@ class StopLigaService:
                 if result and not preserve_block_status
                 else self._optional_bool(previous, "last_is_blocked")
             ),
+            notification_pending=self._notification_map(notification_state, previous, "notification_pending"),
+            last_notified_blocked=self._notification_map(notification_state, previous, "last_notified_blocked"),
             last_gotify_message_id=self._notification_int(notification_state, previous, "last_gotify_message_id"),
             last_ntfy_message_id=self._notification_str(notification_state, previous, "last_ntfy_message_id"),
             last_telegram_message_id=self._notification_int(notification_state, previous, "last_telegram_message_id"),
@@ -241,6 +251,13 @@ class StopLigaService:
         if isinstance(value, bool):
             return None
         return value if isinstance(value, int) else None
+
+    @staticmethod
+    def _notification_map(current: dict[str, object] | None, previous: dict[str, object], key: str) -> dict[str, bool]:
+        value = (current or {}).get(key, previous.get(key, {}))
+        if not isinstance(value, dict):
+            return {}
+        return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, bool)}
 
     @classmethod
     def _notification_int(
@@ -276,12 +293,14 @@ class StopLigaService:
         return tuple(items)
 
     def _run_router_sync(self, feed_snapshot: FeedSnapshot, previous_guard: dict[str, object]) -> SyncResult:
-        driver = create_router_driver(self.config)
-        return driver.sync(
+        if self._driver is None:
+            self._driver = create_router_driver(self.config)
+        return self._driver.sync(
             feed_snapshot,
             previous_guard,
             guard_writer=self._write_bootstrap_guard_triplet,
             guard_clearer=self._clear_bootstrap_guard,
+            before_write=self._before_write,
         )
 
     @staticmethod
@@ -306,6 +325,23 @@ class StopLigaService:
             )
             reconciliation_pending = False
             previous_runtime_state: dict[str, object] = {}
+            mutation_started = False
+
+            def journal_before_write() -> None:
+                nonlocal mutation_started
+                if mutation_started or self.config.dry_run:
+                    return
+                self._write_state(
+                    status="applying",
+                    partial_failure=True,
+                    error_stage="remote-write",
+                    reconciliation_required=True,
+                    sync_id=sync_id,
+                    previous_state=previous_runtime_state,
+                )
+                mutation_started = True
+
+            self._before_write = journal_before_write
             try:
                 previous_runtime_state = self._load_runtime_state()
                 reconciliation_pending = bool(previous_runtime_state.get("reconciliation_required"))
@@ -341,14 +377,36 @@ class StopLigaService:
                         active=schedule_active,
                         timezone=self.config.active_timezone,
                     )
-                feed_snapshot = load_feed_snapshot(self.config) if schedule_active else inactive_snapshot()
+                try:
+                    feed_snapshot = load_feed_snapshot(self.config) if schedule_active else inactive_snapshot()
+                except StopLigaError:
+                    if not schedule_active or self.schedule.is_active():
+                        raise
+                    schedule_active = False
+                    feed_snapshot = inactive_snapshot()
                 # A fetch can cross the closing boundary. Never enable after it closes.
                 if schedule_active and not self.schedule.is_active():
                     schedule_active = False
                     feed_snapshot = inactive_snapshot()
                 previous_guard = self._load_bootstrap_guard(previous_runtime_state)
                 result = self._run_router_sync(feed_snapshot, previous_guard)
+                # Discovery or a slow write can also cross the closing boundary.
+                if schedule_active and not self.schedule.is_active():
+                    schedule_active = False
+                    result = self._run_router_sync(inactive_snapshot(), self._load_bootstrap_guard())
+                pending = self._notification_map(None, previous_runtime_state, "notification_pending")
+                acknowledged = self._notification_map(None, previous_runtime_state, "last_notified_blocked")
+                if schedule_active and not result.dry_run:
+                    pending = {
+                        name: result.is_blocked
+                        for name in notification_targets(self.config, result, previous_runtime_state)
+                    }
+                initial_notifications: dict[str, object] = {
+                    "notification_pending": pending,
+                    "last_notified_blocked": acknowledged,
+                }
                 self._write_state(
+                    notification_state=initial_notifications,
                     status="dry_run" if result.dry_run else "success",
                     result=result,
                     preserve_block_status=not schedule_active,
@@ -363,7 +421,20 @@ class StopLigaService:
                         else NotificationState()
                     )
                     if notification_result.has_values:
-                        notification_state_payload: dict[str, object] = {}
+                        for name in notification_result.delivered_providers:
+                            acknowledged[name] = result.is_blocked
+                            pending.pop(name, None)
+                        notification_state_payload: dict[str, object] = {
+                            "notification_pending": pending,
+                            "last_notified_blocked": acknowledged,
+                        }
+                        if notification_result.failures:
+                            log_event(
+                                self.logger,
+                                logging.WARNING,
+                                "notification_failed",
+                                providers=",".join(notification_result.failures),
+                            )
                         if notification_result.gotify_message_id is not None:
                             notification_state_payload["last_gotify_message_id"] = notification_result.gotify_message_id
                         if notification_result.ntfy_message_id is not None:
@@ -384,6 +455,17 @@ class StopLigaService:
                         )
                 except StopLigaError as exc:
                     log_event(self.logger, logging.WARNING, "notification_failed", error=exc)
+                # Notification retries can cross a closing boundary as well.
+                if schedule_active and not self.schedule.is_active():
+                    result = self._run_router_sync(inactive_snapshot(), self._load_bootstrap_guard())
+                    self._write_state(
+                        status="dry_run" if result.dry_run else "success",
+                        result=result,
+                        preserve_block_status=True,
+                        sync_id=sync_id,
+                        previous_state=self._load_runtime_state(),
+                    )
+                    self._write_bootstrap_guard(result)
                 log_event(
                     self.logger,
                     logging.INFO,
@@ -405,14 +487,17 @@ class StopLigaService:
                     self._write_state(
                         status="error",
                         error=str(exc),
-                        partial_failure=isinstance(exc, PartialUpdateError),
-                        error_stage=exc.failed_stage if isinstance(exc, PartialUpdateError) else None,
+                        partial_failure=isinstance(exc, PartialUpdateError) or mutation_started,
+                        error_stage=exc.failed_stage
+                        if isinstance(exc, PartialUpdateError)
+                        else ("remote-write" if mutation_started else None),
                         rollback_attempted=exc.rollback_attempted if isinstance(exc, PartialUpdateError) else False,
                         rollback_completed=exc.rollback_completed if isinstance(exc, PartialUpdateError) else False,
                         rollback_error=exc.rollback_error if isinstance(exc, PartialUpdateError) else None,
                         reconciliation_required=self._requires_reconciliation(
                             exc, reconciliation_pending=reconciliation_pending
-                        ),
+                        )
+                        or (mutation_started and not (isinstance(exc, PartialUpdateError) and exc.rollback_completed)),
                         sync_id=sync_id,
                         previous_state=previous_runtime_state,
                     )

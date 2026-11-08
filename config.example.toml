@@ -29,6 +29,8 @@ max_destinations = 16384
 [feeds]
 status_url = "https://hayahora.futbol/estado/data.json"
 verify_tls = true
+# Reject stale history without changing the last router state.
+max_age_seconds = 3600
 # hayahora_isp = "DIGI"
 # hayahora_lookback_hours = 24
 

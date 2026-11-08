@@ -27,7 +27,10 @@ def utcnow_iso() -> str:
 def _parse_iso8601(value: str) -> datetime:
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
-    return datetime.fromisoformat(value)
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must contain a timezone")
+    return parsed
 
 
 class FileLock:
@@ -104,6 +107,8 @@ class StateStore:
             raise ConfigError(f"State file exceeds safety limit of {MAX_STATE_FILE_BYTES} bytes: {self.path}")
         try:
             raw = self.path.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise ConfigError(f"State file is not valid UTF-8: {self.path}") from exc
         except OSError as exc:
             raise StateError(f"Unable to read state file {self.path}: {exc}") from exc
         try:
@@ -130,8 +135,11 @@ class StateStore:
         return bad_path
 
     def write(self, snapshot: StateSnapshot) -> None:
+        self.write_payload(dict(vars(snapshot)))
+
+    def write_payload(self, payload: dict[str, object]) -> None:
+        """Atomically persist a compact durable object."""
         ensure_parent_dir(self.path)
-        payload = dict(vars(snapshot))
         temp_name: str | None = None
         try:
             fd, temp_name = tempfile.mkstemp(prefix=f"{self.path.name}.", suffix=".tmp", dir=str(self.path.parent))
@@ -141,6 +149,11 @@ class StateStore:
                 os.fsync(handle.fileno())
             os.chmod(temp_name, 0o600)
             os.replace(temp_name, self.path)
+            dir_fd = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
         except OSError as exc:
             raise StateError(f"Unable to write state file {self.path}: {exc}") from exc
         finally:

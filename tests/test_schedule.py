@@ -61,7 +61,7 @@ def test_optional_days_hours_and_multiple_windows():
     assert not active("sun").is_active(monday)
     assert active(hours="11:00-13:00,20:00-22:00").is_active(monday)
     assert active().wait_seconds(300) == 300
-    assert 0 < active("mon").wait_seconds(300) <= 60
+    assert 0 < active("mon").wait_seconds(300) <= 300
 
 
 @pytest.mark.parametrize(
@@ -224,7 +224,7 @@ def test_feed_fetch_crossing_closing_boundary_disables(tmp_path):
 def test_loop_caps_wait_only_when_schedule_is_configured(tmp_path):
     from stopliga.errors import NetworkError
 
-    for days, upper_bound in [(None, 300), ("mon", 60)]:
+    for days, upper_bound in [(None, 300), ("mon", 300)]:
         service = StopLigaService(
             Config(
                 active_days=days,

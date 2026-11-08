@@ -7,16 +7,16 @@ import logging
 import ssl
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from .errors import NetworkError, NotificationDeliveryError, StopLigaError
 from .logging_utils import log_event
 from .models import Config, SyncResult
-from .utils import compact_json_bytes, make_ssl_context, sleep_with_backoff
+from .utils import compact_json_bytes, make_ssl_context, read_limited, sleep_with_backoff
 
-DEFAULT_USER_AGENT = "stopliga/0.1.30"
+DEFAULT_USER_AGENT = "stopliga/0.1.31"
 
 
 def _safe_notification_url(url: str) -> str:
@@ -42,6 +42,8 @@ class ProviderRequestConfig:
 
 @dataclass(frozen=True)
 class NotificationState:
+    delivered_providers: tuple[str, ...] = ()
+    failures: dict[str, str] = field(default_factory=dict)
     gotify_message_id: int | None = None
     ntfy_message_id: str | None = None
     telegram_message_id: int | None = None
@@ -50,7 +52,8 @@ class NotificationState:
     @property
     def has_values(self) -> bool:
         return (
-            self.gotify_message_id is not None
+            bool(self.delivered_providers or self.failures)
+            or self.gotify_message_id is not None
             or self.ntfy_message_id is not None
             or self.telegram_message_id is not None
             or self.telegram_chat_id is not None
@@ -87,7 +90,9 @@ def _post_json(
         )
         try:
             with opener.open(request, timeout=timeout) as response:
-                raw = response.read()
+                raw = read_limited(
+                    response, max_bytes=1024 * 1024, content_length=response.headers.get("Content-Length")
+                )
                 if not raw:
                     return None
                 try:
@@ -95,7 +100,10 @@ def _post_json(
                 except json.JSONDecodeError:
                     return None
                 return parsed if isinstance(parsed, dict) else None
+        except ValueError as exc:
+            raise NetworkError(f"Notification response exceeded its size limit for {safe_url}") from exc
         except urllib.error.HTTPError as exc:
+            exc.close()
             if exc.code in {408, 429, 500, 502, 503, 504} and attempt < retries:
                 log_event(
                     logger,
@@ -273,18 +281,21 @@ def _extract_telegram_message_id(response: dict[str, Any] | None) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _send_notification_message(config: Config, *, title: str, message: str) -> NotificationState:
+def _send_notification_message(
+    config: Config, *, title: str, message: str, providers: set[str] | None = None, raise_on_failure: bool = True
+) -> NotificationState:
     if not config.has_notifications():
         return NotificationState()
 
     logger = logging.getLogger("stopliga.notify")
     failures: dict[str, str] = {}
+    delivered: list[str] = []
     gotify_message_id: int | None = None
     ntfy_message_id: str | None = None
     telegram_message_id: int | None = None
     telegram_chat_id: str | None = None
 
-    if config.gotify_url and config.gotify_token:
+    if config.gotify_url and config.gotify_token and (providers is None or "gotify" in providers):
         try:
             gotify_url = config.gotify_url.rstrip("/") + "/message"
             request_config = _gotify_request_config(config)
@@ -300,14 +311,16 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
                 retries=request_config.retries,
                 verify_tls=request_config.verify_tls,
                 ca_file=request_config.ca_file,
+                headers={"X-Gotify-Key": config.gotify_token},
             )
+            delivered.append("gotify")
             gotify_message_id = _extract_gotify_message_id(response)
             log_event(logger, logging.INFO, "notification_sent", provider="gotify")
         except StopLigaError as exc:
             failures["gotify"] = str(exc)
             log_event(logger, logging.ERROR, "notification_provider_failed", provider="gotify", error=exc)
 
-    if config.ntfy_url and config.ntfy_topic:
+    if config.ntfy_url and config.ntfy_topic and (providers is None or "ntfy" in providers):
         try:
             request_config = _ntfy_request_config(config)
             headers = {"Authorization": f"Bearer {config.ntfy_token}"} if config.ntfy_token else None
@@ -326,6 +339,7 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
                 ca_file=request_config.ca_file,
                 headers=headers,
             )
+            delivered.append("ntfy")
             ntfy_message_id = _extract_ntfy_message_id(response)
             log_event(logger, logging.INFO, "notification_sent", provider="ntfy")
         except StopLigaError as exc:
@@ -333,7 +347,7 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
             log_event(logger, logging.ERROR, "notification_provider_failed", provider="ntfy", error=exc)
 
     telegram_target = config.resolved_telegram_chat_id()
-    if config.telegram_bot_token and telegram_target:
+    if config.telegram_bot_token and telegram_target and (providers is None or "telegram" in providers):
         try:
             telegram_url = f"https://api.telegram.org/bot{config.telegram_bot_token}/sendMessage"
             request_config = _telegram_request_config(config)
@@ -352,6 +366,9 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
                 verify_tls=request_config.verify_tls,
                 ca_file=request_config.ca_file,
             )
+            if not response or response.get("ok") is not True:
+                raise NetworkError("Telegram did not confirm message delivery")
+            delivered.append("telegram")
             telegram_message_id = _extract_telegram_message_id(response)
             telegram_chat_id = telegram_target if telegram_message_id is not None else None
             log_event(logger, logging.INFO, "notification_sent", provider="telegram")
@@ -359,9 +376,11 @@ def _send_notification_message(config: Config, *, title: str, message: str) -> N
             failures["telegram"] = str(exc)
             log_event(logger, logging.ERROR, "notification_provider_failed", provider="telegram", error=exc)
 
-    if failures:
+    if failures and raise_on_failure:
         raise NotificationDeliveryError(failures)
     return NotificationState(
+        delivered_providers=tuple(delivered),
+        failures=failures,
         gotify_message_id=gotify_message_id,
         ntfy_message_id=ntfy_message_id,
         telegram_message_id=telegram_message_id,
@@ -380,22 +399,37 @@ def send_startup_notification(config: Config) -> None:
     _send_notification_message(config, title="StopLiga Startup", message=message)
 
 
+def notification_targets(config: Config, result: SyncResult, previous_state: dict[str, object]) -> set[str]:
+    if result.dry_run:
+        return set()
+    pending = previous_state.get("notification_pending", {})
+    acknowledged = previous_state.get("last_notified_blocked", {})
+    pending = pending if isinstance(pending, dict) else {}
+    acknowledged = acknowledged if isinstance(acknowledged, dict) else {}
+    targets = set()
+    for provider in _configured_notification_providers(config):
+        provider = provider.lower()
+        confirmed = acknowledged.get(provider)
+        before = confirmed if isinstance(confirmed, bool) else previous_state.get("last_is_blocked")
+        if (isinstance(before, bool) and before != result.is_blocked) or (
+            provider in pending and confirmed != result.is_blocked
+        ):
+            targets.add(provider)
+    return targets
+
+
 def send_notifications(config: Config, result: SyncResult, previous_state: dict[str, object]) -> NotificationState:
-    if result.dry_run or not config.has_notifications():
+    targets = notification_targets(config, result, previous_state)
+    if not targets:
         return NotificationState()
-
-    block_changed = _block_status_changed(result, previous_state)
-    if not block_changed:
-        return NotificationState()
-
+    message_previous = dict(previous_state)
+    # Retrying an undelivered transition must not depend on last observed feed state.
+    message_previous["last_is_blocked"] = not result.is_blocked
     message = build_notification_message(
-        config,
-        result,
-        previous_state,
-        include_block_status=True,
-        include_destinations=False,
+        config, result, message_previous, include_block_status=True, include_destinations=False
     )
     if not message:
         return NotificationState()
-
-    return _send_notification_message(config, title="StopLiga", message=message)
+    return _send_notification_message(
+        config, title="StopLiga", message=message, providers=targets, raise_on_failure=False
+    )

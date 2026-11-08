@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import base64
 import json
 import logging
@@ -12,7 +14,16 @@ import urllib.parse
 import urllib.request
 from typing import Any, Sequence
 
-from .errors import AuthenticationError, ConfigError, DiscoveryError, NetworkError, RemoteRequestError
+from .errors import (
+    AuthenticationError,
+    ConfigError,
+    DiscoveryError,
+    DuplicateRouteError,
+    NetworkError,
+    RemoteRequestError,
+    PartialUpdateError,
+    StopLigaError,
+)
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot, SyncResult
 from .utils import compact_json_bytes, make_ssl_context, read_limited, sleep_with_backoff, sort_ip_tokens
@@ -76,6 +87,7 @@ class OPNsenseClient:
 
     def __init__(self, config: Config):
         self.config = config
+        self.before_write: Callable[[], None] | None = None
         self.logger = logging.getLogger("stopliga.opnsense")
         context = make_ssl_context(
             verify=config.opnsense_verify_tls,
@@ -108,6 +120,8 @@ class OPNsenseClient:
         expected_statuses: Sequence[int] = (200,),
     ) -> Any:
         method_name = method.upper()
+        if method_name not in SAFE_RETRY_METHODS and self.before_write is not None:
+            self.before_write()
         url = f"{self.base_url}/api{path}"
         body_bytes: bytes | None = None
         headers: dict[str, str] = {
@@ -143,7 +157,15 @@ class OPNsenseClient:
                     if not text:
                         return None
                     try:
-                        return json.loads(text)
+                        payload = json.loads(text)
+                        if isinstance(payload, dict):
+                            for key in ("result", "status"):
+                                value = payload.get(key)
+                                if isinstance(value, str) and value.lower() in {"failed", "error", "failure"}:
+                                    raise RemoteRequestError(f"OPNsense {method_name} {path} reported a failure")
+                            if payload.get("validations"):
+                                raise RemoteRequestError(f"OPNsense {method_name} {path} rejected validation")
+                        return payload
                     except json.JSONDecodeError as exc:
                         raise RemoteRequestError(f"{method_name} {path} returned invalid JSON: {text[:500]}") from exc
             except urllib.error.HTTPError as exc:
@@ -206,10 +228,14 @@ class OPNsenseClient:
         search_phrase = urllib.parse.quote(name, safe="")
         payload = self.request("GET", f"/firewall/alias/searchItem?searchPhrase={search_phrase}")
         rows = payload.get("rows", []) if isinstance(payload, dict) else []
-        for row in rows:
-            if isinstance(row, dict) and row.get("name", "").strip().lower() == name.strip().lower():
-                return row
-        return None
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, dict) and str(row.get("name", "")).strip().lower() == name.strip().lower()
+        ]
+        if len(matches) > 1:
+            raise DuplicateRouteError("Multiple OPNsense objects matched the managed name")
+        return matches[0] if matches else None
 
     def get_alias_item(self, uuid: str) -> dict[str, Any]:
         """Return the alias record, unwrapping the alias envelope if present."""
@@ -247,6 +273,9 @@ class OPNsenseClient:
         }
         self.request("POST", f"/firewall/alias/setItem/{uuid}", json_body=payload)
 
+    def delete_alias(self, uuid: str) -> None:
+        self.request("POST", f"/firewall/alias/delItem/{uuid}")
+
     def reconfigure_alias(self) -> None:
         self.request("POST", "/firewall/alias/reconfigure")
 
@@ -256,10 +285,14 @@ class OPNsenseClient:
         search_phrase = urllib.parse.quote(description, safe="")
         payload = self.request("GET", f"/firewall/filter/searchRule?searchPhrase={search_phrase}")
         rows = payload.get("rows", []) if isinstance(payload, dict) else []
-        for row in rows:
-            if isinstance(row, dict) and row.get("description", "").strip().lower() == description.strip().lower():
-                return row
-        return None
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, dict) and str(row.get("description", "")).strip().lower() == description.strip().lower()
+        ]
+        if len(matches) > 1:
+            raise DuplicateRouteError("Multiple OPNsense objects matched the managed description")
+        return matches[0] if matches else None
 
     def toggle_rule(self, uuid: str, enabled: bool) -> None:
         self.request("POST", f"/firewall/filter/toggleRule/{uuid}/{1 if enabled else 0}")
@@ -268,125 +301,111 @@ class OPNsenseClient:
         self.request("POST", "/firewall/filter/apply")
 
 
-def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
-    """Synchronize OPNsense alias IPs and firewall rule state."""
-
-    client = OPNsenseClient(config)
+def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot, *, client: OPNsenseClient | None = None) -> SyncResult:
+    """Reconcile a unique alias/rule, verify writes and restore confirmed partial changes."""
+    client = client or OPNsenseClient(config)
     client.authenticate()
-
     alias_name = config.opnsense_alias_name or sanitize_alias_name(config.route_name)
-    rule_description = config.route_name
     desired_ips = list(feed_snapshot.destinations)
-    desired_enabled = feed_snapshot.desired_enabled
-    logger = logging.getLogger("stopliga.opnsense")
-
+    desired_enabled = bool(feed_snapshot.desired_enabled and desired_ips)
     existing_alias = client.search_alias(alias_name)
-    alias_created = False
-    alias_ips_changed = False
-    current_ips: list[str] = []
-
-    if existing_alias is None:
-        if desired_ips:
-            log_event(
-                logger,
-                logging.INFO,
-                "opnsense_alias_create",
-                alias=alias_name,
-                dry_run=config.dry_run,
-            )
-            if not config.dry_run:
-                client.create_alias(alias_name, desired_ips)
-                client.reconfigure_alias()
-            alias_created = True
-    else:
-        alias_uuid = str(existing_alias.get("uuid", "")).strip()
-        if not alias_uuid:
-            raise DiscoveryError(f"Alias {alias_name!r} was found but did not include a UUID")
-        alias_record = client.get_alias_item(alias_uuid)
-        current_ips = parse_alias_content(alias_record)
-        preserve_alias_content = not desired_enabled and not desired_ips
-        alias_ips_changed = False if preserve_alias_content else current_ips != desired_ips
-        log_event(
-            logger,
-            logging.INFO,
-            "opnsense_alias_check",
-            alias=alias_name,
-            alias_uuid=alias_uuid,
-            current_destinations=len(current_ips),
-            desired_destinations=len(desired_ips),
-            ips_changed=alias_ips_changed,
-        )
-        if alias_ips_changed and not config.dry_run:
-            client.update_alias_content(alias_uuid, alias_name, desired_ips)
-            client.reconfigure_alias()
-
-    rule_record = client.search_rule(rule_description)
-    if rule_record is None:
-        if not desired_enabled and not desired_ips:
-            return SyncResult(
-                mode="opnsense",
-                route_name=config.route_name,
-                route_id=None,
-                backend_name="opnsense-alias+rule",
-                changed=alias_created,
-                created=alias_created,
-                dry_run=config.dry_run,
-                desired_enabled=False,
-                current_enabled=None,
-                desired_destinations=0,
-                current_destinations=len(current_ips),
-                invalid_entries=feed_snapshot.invalid_count,
-                feed_hash=feed_snapshot.feed_hash,
-                destinations_hash=feed_snapshot.destinations_hash,
-                summary=f"alias={alias_name} rule={rule_description!r} enabled=False ips=0 added=0 removed=0",
-                is_blocked=feed_snapshot.is_blocked,
-            )
+    rule = client.search_rule(config.route_name)
+    if rule is None and (desired_enabled or desired_ips):
         raise DiscoveryError(
-            f"Firewall rule {rule_description!r} not found in OPNsense. "
-            "Create it in Firewall > Rules [new] (or Firewall > Automation > Filter) "
-            "with that exact description, then restart StopLiga."
+            f"Firewall rule {config.route_name!r} not found in OPNsense. "
+            "Create it in Firewall > Rules [new] (Firewall > Automation > Filter on older versions) before syncing"
         )
-    rule_uuid = str(rule_record.get("uuid", "")).strip()
-    if not rule_uuid:
-        raise DiscoveryError(f"Firewall rule {rule_description!r} was found but did not include a UUID")
-
-    current_enabled = _is_truthy_flag(rule_record.get("enabled"))
-    rule_changed = current_enabled != desired_enabled
-
-    log_event(
-        logger,
-        logging.INFO,
-        "opnsense_rule_check",
-        rule=rule_description,
-        rule_uuid=rule_uuid,
-        current_enabled=current_enabled,
-        desired_enabled=desired_enabled,
-        rule_changed=rule_changed,
-    )
-
-    if rule_changed and not config.dry_run:
-        client.toggle_rule(rule_uuid, desired_enabled)
-        client.apply_filter()
-
-    if not desired_enabled and not desired_ips:
-        added = 0
-        removed = 0
-    elif current_ips == desired_ips:
-        added = 0
-        removed = 0
-    else:
-        desired_ip_set = set(desired_ips)
-        current_ip_set = set(current_ips)
-        added = len(desired_ip_set - current_ip_set)
-        removed = len(current_ip_set - desired_ip_set)
-    changed = alias_created or alias_ips_changed or rule_changed
-
+    rule_id = str(rule.get("uuid", "")).strip() if rule else None
+    if rule is not None and not rule_id:
+        raise DiscoveryError("OPNsense rule does not expose a UUID")
+    current_enabled = _is_truthy_flag(rule.get("enabled")) if rule else None
+    alias_id = str(existing_alias.get("uuid", "")).strip() if existing_alias else None
+    if existing_alias is not None and not alias_id:
+        raise DiscoveryError("OPNsense alias does not expose a UUID")
+    current_ips = parse_alias_content(client.get_alias_item(alias_id)) if alias_id else []
+    preserve = not desired_enabled and not desired_ips
+    alias_changed = not preserve and current_ips != desired_ips
+    alias_created = existing_alias is None and bool(desired_ips)
+    rule_changed = rule is not None and current_enabled != desired_enabled
+    completed: list[str] = []
+    stage = "prepare"
+    if not config.dry_run:
+        try:
+            # Close the rule before editing its alias when disabling.
+            if rule_changed and not desired_enabled and rule_id:
+                stage = "rule-disable"
+                client.toggle_rule(rule_id, False)
+                completed.append("rule")
+                client.apply_filter()
+            if alias_created:
+                stage = "alias-create"
+                alias_id = client.create_alias(alias_name, desired_ips)
+                completed.append("alias-create")
+                client.reconfigure_alias()
+            elif alias_changed and alias_id:
+                stage = "alias-update"
+                client.update_alias_content(alias_id, alias_name, desired_ips)
+                completed.append("alias-update")
+                client.reconfigure_alias()
+            if rule_changed and desired_enabled and rule_id:
+                stage = "rule-enable"
+                client.toggle_rule(rule_id, True)
+                completed.append("rule")
+                client.apply_filter()
+            stage = "verify"
+            if alias_changed or alias_created:
+                if not alias_id or parse_alias_content(client.get_alias_item(alias_id)) != desired_ips:
+                    raise RemoteRequestError("OPNsense alias did not keep its expected destinations")
+            if rule_changed:
+                refreshed = client.search_rule(config.route_name)
+                if refreshed is None or _is_truthy_flag(refreshed.get("enabled")) != desired_enabled:
+                    raise RemoteRequestError("OPNsense rule did not keep its expected enabled state")
+        except StopLigaError as exc:
+            if isinstance(exc, NetworkError):
+                raise PartialUpdateError(
+                    stage,
+                    tuple(completed + ["uncertain-write"]),
+                    "OPNsense write outcome is unknown; reconcile before retrying",
+                ) from exc
+            rollback_error = None
+            try:
+                if "rule" in completed and rule_id:
+                    client.toggle_rule(rule_id, False)
+                    client.apply_filter()
+                if "alias-create" in completed and alias_id:
+                    client.delete_alias(alias_id)
+                    client.reconfigure_alias()
+                elif "alias-update" in completed and alias_id:
+                    client.update_alias_content(alias_id, alias_name, current_ips)
+                    client.reconfigure_alias()
+                if "rule" in completed and rule_id and current_enabled:
+                    client.toggle_rule(rule_id, True)
+                    client.apply_filter()
+                if "rule" in completed:
+                    restored = client.search_rule(config.route_name)
+                    if restored is None or _is_truthy_flag(restored.get("enabled")) != current_enabled:
+                        raise RemoteRequestError("OPNsense rollback could not verify the original rule")
+                if "alias-update" in completed and alias_id:
+                    if parse_alias_content(client.get_alias_item(alias_id)) != current_ips:
+                        raise RemoteRequestError("OPNsense rollback could not verify the original alias")
+            except StopLigaError as rollback_exc:
+                rollback_error = str(rollback_exc)
+            raise PartialUpdateError(
+                stage,
+                tuple(completed),
+                str(exc),
+                rollback_attempted=bool(completed),
+                rollback_completed=bool(completed) and rollback_error is None,
+                rollback_error=rollback_error,
+            ) from exc
+    added = len(set(desired_ips) - set(current_ips)) if not preserve else 0
+    removed = len(set(current_ips) - set(desired_ips)) if not preserve else 0
     return SyncResult(
         mode="opnsense",
         route_name=config.route_name,
-        route_id=rule_uuid,
+        route_id=rule_id,
         backend_name="opnsense-alias+rule",
-        changed=changed,
+        changed=alias_created or alias_changed or rule_changed,
         created=alias_created,
         dry_run=config.dry_run,
         desired_enabled=desired_enabled,
@@ -396,10 +415,7 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot) -> SyncResult:
         invalid_entries=feed_snapshot.invalid_count,
         feed_hash=feed_snapshot.feed_hash,
         destinations_hash=feed_snapshot.destinations_hash,
-        summary=(
-            f"alias={alias_name} rule={rule_description!r} "
-            f"enabled={desired_enabled} ips={len(desired_ips)} added={added} removed={removed}"
-        ),
+        summary=f"alias={alias_name} enabled={desired_enabled} ips={len(desired_ips)}",
         is_blocked=feed_snapshot.is_blocked,
         added_destinations=added,
         removed_destinations=removed,

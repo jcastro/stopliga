@@ -45,7 +45,25 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [amd64, arm64]
     steps:
       - uses: actions/checkout@v6
-      - name: Build image
-        run: docker build -t stopliga .
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Install smoke test dependencies
+        run: python -m pip install .
+      - name: Build Alpine image
+        run: docker buildx build --platform linux/${{ matrix.platform }} --load -t stopliga:test .
+      - name: Validate the actual Compose runtime
+        run: python scripts/container_smoke.py stopliga:test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: alpine-runtime-${{ matrix.platform }}
+          path: container-smoke.json

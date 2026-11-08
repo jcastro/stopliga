@@ -11,6 +11,7 @@ from ..models import FeedSnapshot, SyncResult, UpdatePlan
 
 BootstrapGuardWriter = Callable[[str | None, str | None, tuple[str, ...]], None]
 BootstrapGuardClearer = Callable[[], None]
+BeforeWrite = Callable[[], None]
 
 
 class RouteBackend(Protocol):
@@ -55,5 +56,6 @@ class RouterDriver(Protocol):
         *,
         guard_writer: BootstrapGuardWriter,
         guard_clearer: BootstrapGuardClearer,
+        before_write: BeforeWrite | None = None,
     ) -> SyncResult:
         """Synchronize the managed route against the desired feed snapshot."""

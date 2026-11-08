@@ -16,10 +16,12 @@ If you can run Docker, you can usually run StopLiga.
 
 1. Copy `.env.example` to `.env`
 2. In `.env`, choose your router and fill only that section
-3. Start it
+3. Prepare the persistent folders for the container user, then start it
 
 ```bash
 cp .env.example .env
+mkdir -p data config
+sudo chown 10001:10001 data
 docker compose pull
 docker compose up -d
 docker compose logs -f
@@ -168,6 +170,27 @@ docker compose pull && docker compose up -d
 docker compose down
 ```
 
+The image uses Python 3.12 on Alpine Linux and runs as UID/GID `10001:10001`.
+It supports AMD64 and ARM64. Compose uses a read-only root filesystem, drops
+all Linux capabilities and rotates logs at 5 MiB × 3 files.
+
+When upgrading an existing installation, stop it first and preserve `./data`.
+If it already belongs to UID/GID 10001, no ownership change is needed. For an
+older deployment with a different owner, adjust only StopLiga's own files:
+
+```bash
+docker compose stop
+sudo chown 10001:10001 data
+sudo find data -maxdepth 1 -type f \( -name state.json -o -name bootstrap_guard.json -o -name stopliga.lock \) -exec chown 10001:10001 {} +
+docker compose pull
+docker compose up -d
+```
+
+Alternatively, set `STOPLIGA_UID` and `STOPLIGA_GID` in `.env` to the existing
+owner. Ensure that user can write the folder and the existing state files;
+keep their private permissions. Do not delete the bootstrap guard to solve a
+permission issue. The bind mount remains `./data:/data` across upgrades.
+
 What it does:
 
 - mounts `./data` to store runtime state
@@ -185,10 +208,34 @@ docker run -d \
   --env-file .env \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/config:/config:ro" \
-  ghcr.io/jcastro/stopliga:0.1.30
+  ghcr.io/jcastro/stopliga:0.1.31
 ```
 
 The `/config` mount is optional.
+
+## Feed safety and recovery
+
+Hayahora history is parsed incrementally, retaining only the newest change per
+entry. Downloads negotiate gzip with separate limits on compressed and expanded
+bytes. `STOPLIGA_FEED_MAX_AGE_SECONDS` defaults to 3600 (`[feeds].max_age_seconds`
+in TOML). A missing, stale or future history timestamp fails the cycle, leaves
+the router unchanged and fails the healthcheck until a fresh feed arrives.
+
+When the schedule closes, StopLiga disables the managed route independently of
+feed availability. With no matching destinations it disables the route and keeps
+previous destinations for inspection. Custom status JSON (`isBlocked`, `blocked`
+or `state`) can still use `STOPLIGA_IP_LIST_URL`; custom DNS status feeds are
+supported too. `strict_feed_consistency` rejects an active legacy status with an
+empty TXT list. These legacy feeds have no history freshness guarantee.
+
+Before a router write, StopLiga persists an in-progress marker. If a process dies
+or a write outcome cannot be confirmed, new writes stop and healthcheck fails.
+Inspect the exact managed route/rule, its destinations and pending bootstrap
+review first. After reconciling the router, stop StopLiga, back up `state.json`,
+clear its `reconciliation_required` flag and restart. Preserve
+`bootstrap_guard.json`; it records any manual review still required. Readback
+verifies successful updates and completed rollbacks. `--dry-run` preserves
+applied state, bootstrap review and pending notification acknowledgments.
 
 ## Notifications
 
@@ -199,6 +246,13 @@ StopLiga can also notify through:
 - Telegram
 
 When notifications are configured and StopLiga runs in `loop` mode, it sends a startup test message once when the service begins so you can verify delivery without waiting for the next route change.
+
+Gotify sends its configured token in `X-Gotify-Key`. Failed status-change
+notifications remain pending per provider and retry on the next successful sync,
+including after a restart. Successful providers are acknowledged separately.
+Pending status is coalesced to the newest observed state, so an old transition
+is not queued indefinitely. Delivery is at least once: a lost acknowledgment
+can cause a duplicate message.
 
 Most users can ignore notifications until the main sync is working.
 

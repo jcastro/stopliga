@@ -22,7 +22,6 @@ from .errors import (
     UnsupportedRouteShapeError,
 )
 from .logging_utils import configure_logging, log_event
-from .service import StopLigaService
 from .state import FileLock, StateStore
 
 
@@ -52,6 +51,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.healthcheck:
             return _run_healthcheck(config)
+
+        from .service import StopLigaService
 
         service = StopLigaService(config)
         with FileLock(config.lock_file):

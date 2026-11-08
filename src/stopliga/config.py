@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import math
 import os
 import tomllib
 from pathlib import Path
@@ -16,7 +17,6 @@ from .feed_policy import validate_feed_url as _validate_feed_url
 from .models import (
     Config,
     InvalidEntryPolicy,
-    LegacyFirewallBackend,
     OmadaTargetType,
     RouterType,
     RunMode,
@@ -54,7 +54,10 @@ def _parse_float(value: Any, *, field_name: str) -> float:
     if isinstance(value, bool):
         raise ConfigError(f"Invalid float value for {field_name}: {value!r}")
     try:
-        return float(value)
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError("value must be finite")
+        return result
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"Invalid float value for {field_name}: {value!r}") from exc
 
@@ -275,6 +278,7 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "request_timeout": app.get("request_timeout"),
         "retries": app.get("retries"),
         "max_response_bytes": app.get("max_response_bytes"),
+        "feed_max_age_seconds": feeds.get("max_age_seconds"),
         "interval_seconds": app.get("interval_seconds"),
         "active_days": app.get("active_days"),
         "active_hours": app.get("active_hours"),
@@ -486,7 +490,7 @@ def _normalize_run_mode(args: argparse.Namespace, env: Mapping[str, str], file_c
 def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = None, *, validate: bool = True) -> Config:
     """Build the runtime configuration with default/file/env/CLI precedence."""
 
-    env = environ or os.environ
+    env = os.environ if environ is None else environ
     config_path_raw = _first(args.config, _env_value(env, "STOPLIGA_CONFIG_FILE"))
     config_path = Path(config_path_raw).expanduser() if config_path_raw else None
     file_cfg = load_config_file(config_path)
@@ -646,14 +650,7 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
     config = Config(
         run_mode=cast(RunMode, _normalize_run_mode(args, env, file_cfg)),
         router_type=router_type,
-        firewall_backend=cast(
-            LegacyFirewallBackend | None,
-            _first(
-                _env_value(env, "STOPLIGA_FIREWALL_BACKEND"),
-                file_cfg.get("firewall_backend"),
-                DEFAULTS.firewall_backend,
-            ),
-        ),
+        firewall_backend=None,
         host=cast(str | None, unifi_host),
         port=_parse_int(unifi_port, field_name="port"),
         api_key=_first(
@@ -845,6 +842,14 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
                 DEFAULTS.feed_allow_private_hosts,
             ),
             field_name="feed_allow_private_hosts",
+        ),
+        feed_max_age_seconds=_parse_int(
+            _first(
+                _env_value(env, "STOPLIGA_FEED_MAX_AGE_SECONDS"),
+                file_cfg.get("feed_max_age_seconds"),
+                DEFAULTS.feed_max_age_seconds,
+            ),
+            field_name="feed_max_age_seconds",
         ),
         strict_feed_consistency=_parse_bool(
             _first(
@@ -1126,11 +1131,11 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
 
     if config.retries < 1:
         raise ConfigError("retries must be >= 1")
-    if config.request_timeout <= 0:
+    if not math.isfinite(config.request_timeout) or config.request_timeout <= 0:
         raise ConfigError("request_timeout must be > 0")
     if config.max_response_bytes < 1024:
         raise ConfigError("max_response_bytes must be >= 1024")
-    if config.notification_timeout <= 0:
+    if not math.isfinite(config.notification_timeout) or config.notification_timeout <= 0:
         raise ConfigError("notification_timeout must be > 0")
     ActiveSchedule(config)
     if config.interval_seconds <= 0 and config.run_mode == "loop":
@@ -1155,6 +1160,8 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError(f"invalid_entry_policy must be fail|ignore, not {config.invalid_entry_policy!r}")
     if config.hayahora_isp is not None and not config.hayahora_isp.strip():
         raise ConfigError("hayahora_isp must not be empty when set")
+    if config.feed_max_age_seconds < 1:
+        raise ConfigError("feed_max_age_seconds must be >= 1")
     if config.hayahora_lookback_hours < 1:
         raise ConfigError("hayahora_lookback_hours must be >= 1")
     if config.router_type not in get_args(RouterType):

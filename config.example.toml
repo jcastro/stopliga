@@ -13,6 +13,11 @@ run_mode = "loop"
 # Check interval in seconds.
 interval_seconds = 300
 
+# Optional local-time schedule (also available via STOPLIGA_ACTIVE_*).
+# active_days = "fri,sat,sun"
+# active_hours = "20:00-23:59"
+# active_timezone = "Europe/Madrid"
+
 # Name of the managed route or rule.
 route_name = "StopLiga"
 

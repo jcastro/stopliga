@@ -56,6 +56,10 @@ def _event_message(event: str | None, fields: dict[str, Any]) -> str | None:
         return "Detected UniFi Network API"
     if event == "site_resolved":
         return "Connected to UniFi site"
+    if event == "schedule_check":
+        return "Inside active schedule" if fields.get("active") else "Outside active schedule; disabling managed rule"
+    if event == "route_missing_noop":
+        return "Route not created: no active destinations"
     if event == "route_found":
         return "Found managed route"
     if event == "route_bootstrap_prepared":

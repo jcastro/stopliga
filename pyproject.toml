@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stopliga"
-version = "0.1.29"
+version = "0.1.30"
 description = "Synchronize a managed router route or rule with live block status and a public IP feed."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,7 +25,7 @@ classifiers = [
   "Topic :: System :: Networking",
   "Topic :: System :: Systems Administration",
 ]
-dependencies = []
+dependencies = ["tzdata>=2025.2"]
 
 [project.optional-dependencies]
 dev = [

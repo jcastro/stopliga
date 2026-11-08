@@ -11,6 +11,7 @@ from typing import Any, Mapping, cast, get_args
 from urllib.parse import urlparse
 
 from .errors import ConfigError
+from .schedule import ActiveSchedule
 from .feed_policy import validate_feed_url as _validate_feed_url
 from .models import (
     Config,
@@ -275,6 +276,9 @@ def load_config_file(path: Path | None) -> dict[str, Any]:
         "retries": app.get("retries"),
         "max_response_bytes": app.get("max_response_bytes"),
         "interval_seconds": app.get("interval_seconds"),
+        "active_days": app.get("active_days"),
+        "active_hours": app.get("active_hours"),
+        "active_timezone": app.get("active_timezone"),
         "dry_run": app.get("dry_run"),
         "invalid_entry_policy": app.get("invalid_entry_policy"),
         "max_destinations": app.get("max_destinations"),
@@ -319,6 +323,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="stopliga",
         description="Synchronize a managed router route with live block status and a public IP feed.",
     )
+    parser.add_argument("--active-days", default=None, help="Active weekdays: mon,tue,wed,thu,fri,sat,sun")
+    parser.add_argument("--active-hours", default=None, help="Local time windows: HH:MM-HH:MM, comma-separated")
+    parser.add_argument("--active-timezone", default=None, help="IANA timezone (default UTC)")
     parser.add_argument("--config", default=None, help="Optional TOML config file")
     parser.add_argument("--healthcheck", action="store_true", help="Validate recent state file freshness")
     parser.add_argument("--router-type", default=None, help="Router backend to use")
@@ -902,6 +909,14 @@ def load_config(args: argparse.Namespace, environ: Mapping[str, str] | None = No
             ),
             field_name="max_destinations",
         ),
+        active_days=_first(args.active_days, _env_value(env, "STOPLIGA_ACTIVE_DAYS"), file_cfg.get("active_days")),
+        active_hours=_first(args.active_hours, _env_value(env, "STOPLIGA_ACTIVE_HOURS"), file_cfg.get("active_hours")),
+        active_timezone=_first(
+            args.active_timezone,
+            _env_value(env, "STOPLIGA_ACTIVE_TIMEZONE"),
+            file_cfg.get("active_timezone"),
+            DEFAULTS.active_timezone,
+        ),
         state_file=_parse_path(
             _first(
                 args.state_file,
@@ -1117,6 +1132,7 @@ def validate_config(config: Config, *, validate_connection: bool) -> None:
         raise ConfigError("max_response_bytes must be >= 1024")
     if config.notification_timeout <= 0:
         raise ConfigError("notification_timeout must be > 0")
+    ActiveSchedule(config)
     if config.interval_seconds <= 0 and config.run_mode == "loop":
         raise ConfigError("loop mode requires interval_seconds > 0")
     if config.health_max_age_seconds is not None and config.health_max_age_seconds <= 0:

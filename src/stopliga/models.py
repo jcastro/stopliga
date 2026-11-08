@@ -54,6 +54,9 @@ class Config:
     request_timeout: float = 15.0
     retries: int = 4
     max_response_bytes: int = 2 * 1024 * 1024
+    active_days: str | None = None
+    active_hours: str | None = None
+    active_timezone: str = "UTC"
     interval_seconds: int = 300
     dry_run: bool = False
     invalid_entry_policy: InvalidEntryPolicy = "fail"

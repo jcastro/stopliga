@@ -520,7 +520,11 @@ class UniFiClient:
                     if not require_json:
                         return text
                     try:
-                        return json.loads(text)
+                        payload = json.loads(text)
+                        meta = payload.get("meta") if isinstance(payload, dict) else None
+                        if isinstance(meta, dict) and meta.get("rc") not in (None, "ok"):
+                            raise RemoteRequestError(f"{method} {path} returned an application-level error")
+                        return payload
                     except json.JSONDecodeError as exc:
                         raise RemoteRequestError(f"{method} {path} returned invalid JSON: {text[:500]}") from exc
             except urllib.error.HTTPError as exc:
@@ -1066,7 +1070,7 @@ class BaseRouteBackend:
     def verify(self, route_id_value: str, desired_ips: Sequence[str], desired_enabled: bool) -> None:
         _, route_record = self.get_route(route_id_value)
         current_enabled = route_record.get("enabled")
-        if current_enabled is not None and current_enabled != desired_enabled:
+        if not isinstance(current_enabled, bool) or current_enabled != desired_enabled:
             raise RemoteRequestError(f"Route {route_label(route_record)!r} did not keep enabled={desired_enabled}")
 
         if not desired_enabled and not desired_ips:
@@ -1528,8 +1532,11 @@ class UniFiRouterDriver(RouterDriver):
             desired_enabled=plan.desired_enabled,
             fields_changed=",".join(plan.route_changed_fields + plan.linked_list_changed_fields),
         )
-        if not self.config.dry_run and plan.has_changes:
-            apply_plan(client, backend, plan)
+        if not self.config.dry_run:
+            if plan.has_changes:
+                apply_plan(client, backend, plan)
+            elif created:
+                backend.verify(plan.route_id, plan.desired_destinations, plan.desired_enabled)
         return result
 
     def _bootstrap_route(

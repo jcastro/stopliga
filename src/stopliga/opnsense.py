@@ -226,8 +226,18 @@ class OPNsenseClient:
         """Return the alias row whose name exactly matches."""
 
         search_phrase = urllib.parse.quote(name, safe="")
-        payload = self.request("GET", f"/firewall/alias/searchItem?searchPhrase={search_phrase}")
+        payload = self.request("GET", f"/firewall/alias/searchItem?current=1&rowCount=-1&searchPhrase={search_phrase}")
         rows = payload.get("rows", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            raise RemoteRequestError("OPNsense search returned invalid rows")
+        total = payload.get("total") if isinstance(payload, dict) else None
+        if total is not None:
+            try:
+                complete = int(total) == len(rows)
+            except (ValueError, TypeError):
+                complete = False
+            if not complete:
+                raise RemoteRequestError("OPNsense search returned an incomplete inventory")
         matches = [
             row
             for row in rows
@@ -280,11 +290,21 @@ class OPNsenseClient:
         self.request("POST", "/firewall/alias/reconfigure")
 
     def search_rule(self, description: str) -> dict[str, Any] | None:
-        """Return the first rule whose description exactly matches."""
+        """Return the unique rule whose description exactly matches."""
 
         search_phrase = urllib.parse.quote(description, safe="")
-        payload = self.request("GET", f"/firewall/filter/searchRule?searchPhrase={search_phrase}")
+        payload = self.request("GET", f"/firewall/filter/searchRule?current=1&rowCount=-1&searchPhrase={search_phrase}")
         rows = payload.get("rows", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            raise RemoteRequestError("OPNsense search returned invalid rows")
+        total = payload.get("total") if isinstance(payload, dict) else None
+        if total is not None:
+            try:
+                complete = int(total) == len(rows)
+            except (ValueError, TypeError):
+                complete = False
+            if not complete:
+                raise RemoteRequestError("OPNsense search returned an incomplete inventory")
         matches = [
             row
             for row in rows
@@ -347,15 +367,16 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot, *, client: OPNsen
                 client.update_alias_content(alias_id, alias_name, desired_ips)
                 completed.append("alias-update")
                 client.reconfigure_alias()
+            stage = "verify-alias"
+            if alias_changed or alias_created:
+                if not alias_id or parse_alias_content(client.get_alias_item(alias_id)) != desired_ips:
+                    raise RemoteRequestError("OPNsense alias did not keep its expected destinations")
             if rule_changed and desired_enabled and rule_id:
                 stage = "rule-enable"
                 client.toggle_rule(rule_id, True)
                 completed.append("rule")
                 client.apply_filter()
-            stage = "verify"
-            if alias_changed or alias_created:
-                if not alias_id or parse_alias_content(client.get_alias_item(alias_id)) != desired_ips:
-                    raise RemoteRequestError("OPNsense alias did not keep its expected destinations")
+            stage = "verify-rule"
             if rule_changed:
                 refreshed = client.search_rule(config.route_name)
                 if refreshed is None or _is_truthy_flag(refreshed.get("enabled")) != desired_enabled:
@@ -385,6 +406,8 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot, *, client: OPNsen
                     restored = client.search_rule(config.route_name)
                     if restored is None or _is_truthy_flag(restored.get("enabled")) != current_enabled:
                         raise RemoteRequestError("OPNsense rollback could not verify the original rule")
+                if "alias-create" in completed and client.search_alias(alias_name) is not None:
+                    raise RemoteRequestError("OPNsense rollback left a newly created alias")
                 if "alias-update" in completed and alias_id:
                     if parse_alias_content(client.get_alias_item(alias_id)) != current_ips:
                         raise RemoteRequestError("OPNsense rollback could not verify the original alias")

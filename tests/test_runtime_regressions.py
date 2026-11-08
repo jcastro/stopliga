@@ -334,14 +334,14 @@ def test_opnsense_restores_and_verifies_alias_after_rule_failure():
     client = Mock()
     client.search_alias.return_value = {"uuid": "a"}
     client.search_rule.return_value = {"uuid": "r", "enabled": "0"}
-    client.get_alias_item.side_effect = [{"content": "192.0.2.9"}, {"content": "192.0.2.9"}]
+    client.get_alias_item.side_effect = [{"content": "192.0.2.9"}, {"content": "192.0.2.1"}, {"content": "192.0.2.9"}]
     client.toggle_rule.side_effect = RemoteRequestError("explicit rejection")
     with pytest.raises(PartialUpdateError) as caught:
         sync_opnsense(config, feed(), client=client)
     assert caught.value.rollback_attempted is True
     assert caught.value.rollback_completed is True
     assert [call.args[-1] for call in client.update_alias_content.call_args_list] == [["192.0.2.1"], ["192.0.2.9"]]
-    assert client.get_alias_item.call_count == 2
+    assert client.get_alias_item.call_count == 3
 
 
 def test_omada_pagination_reads_short_pages_when_total_is_known():
@@ -428,3 +428,41 @@ def test_notification_delay_cannot_leave_route_enabled_after_closing(tmp_path):
         assert service.run_once().desired_enabled is False
     assert sync.call_count == 2
     assert sync.call_args.args[0].desired_enabled is False
+
+
+def test_opnsense_requests_all_matches_and_rejects_truncated_inventory():
+    client = OPNsenseClient(Config(opnsense_host="fw.invalid"))
+    with patch.object(
+        client, "request", return_value={"rows": [{"description": "StopLiga", "uuid": "r"}], "total": 2}
+    ) as request:
+        with pytest.raises(RemoteRequestError, match="incomplete inventory"):
+            client.search_rule("StopLiga")
+    assert "rowCount=-1" in request.call_args.args[1]
+
+
+@pytest.mark.parametrize("alias_leftover", [False, True])
+def test_opnsense_verifies_removal_of_created_alias_during_rollback(alias_leftover):
+    from stopliga.opnsense import sync_opnsense
+
+    client = Mock()
+    client.search_alias.side_effect = [None, {"uuid": "new"} if alias_leftover else None]
+    client.search_rule.return_value = {"uuid": "r", "enabled": "0"}
+    client.create_alias.return_value = "new"
+    client.reconfigure_alias.side_effect = [RemoteRequestError("reload rejected"), None]
+    with pytest.raises(PartialUpdateError) as caught:
+        sync_opnsense(Config(router_type="opnsense"), feed(), client=client)
+    assert caught.value.rollback_completed is (not alias_leftover)
+    client.delete_alias.assert_called_once_with("new")
+
+
+def test_opnsense_never_enables_rule_with_unverified_alias():
+    from stopliga.opnsense import sync_opnsense
+
+    client = Mock()
+    client.search_alias.return_value = {"uuid": "a"}
+    client.search_rule.return_value = {"uuid": "r", "enabled": "0"}
+    client.get_alias_item.return_value = {"content": "192.0.2.9"}
+    with pytest.raises(PartialUpdateError) as caught:
+        sync_opnsense(Config(router_type="opnsense"), feed(), client=client)
+    assert caught.value.rollback_completed is True
+    client.toggle_rule.assert_not_called()

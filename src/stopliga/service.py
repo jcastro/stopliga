@@ -18,9 +18,10 @@ from .errors import (
 from .feed import load_feed_snapshot
 from .logging_utils import log_context, log_event
 from .models import Config, FeedSnapshot, StateSnapshot, SyncResult
-from .notifier import send_notifications, send_startup_notification
+from .notifier import NotificationState, send_notifications, send_startup_notification
 from .routers.factory import create_router_driver
 from .state import StateStore, utcnow_iso
+from .schedule import ActiveSchedule, inactive_snapshot
 
 
 FATAL_LOOP_ERRORS = (
@@ -37,6 +38,7 @@ class StopLigaService:
 
     def __init__(self, config: Config):
         self.config = config
+        self.schedule = ActiveSchedule(config)
         self.logger = logging.getLogger("stopliga.service")
         self.state_store = StateStore(config.state_file)
         self.bootstrap_guard_store = StateStore(config.bootstrap_guard_file)
@@ -171,6 +173,7 @@ class StopLigaService:
         reconciliation_required: bool = False,
         previous_state: dict[str, object] | None = None,
         notification_state: dict[str, object] | None = None,
+        preserve_block_status: bool = False,
     ) -> None:
         now = utcnow_iso()
         previous = previous_state if previous_state is not None else self._load_runtime_state()
@@ -203,7 +206,11 @@ class StopLigaService:
             rollback_completed=rollback_completed,
             rollback_error=rollback_error,
             reconciliation_required=reconciliation_required,
-            last_is_blocked=result.is_blocked if result else self._optional_bool(previous, "last_is_blocked"),
+            last_is_blocked=(
+                result.is_blocked
+                if result and not preserve_block_status
+                else self._optional_bool(previous, "last_is_blocked")
+            ),
             last_gotify_message_id=self._notification_int(notification_state, previous, "last_gotify_message_id"),
             last_ntfy_message_id=self._notification_str(notification_state, previous, "last_ntfy_message_id"),
             last_telegram_message_id=self._notification_int(notification_state, previous, "last_telegram_message_id"),
@@ -325,18 +332,36 @@ class StopLigaService:
                     raise ReconciliationRequiredError(
                         "Previous sync left the remote state requiring reconciliation; refusing new writes"
                     )
-                feed_snapshot = load_feed_snapshot(self.config)
+                schedule_active = self.schedule.is_active()
+                if self.schedule.configured:
+                    log_event(
+                        self.logger,
+                        logging.INFO,
+                        "schedule_check",
+                        active=schedule_active,
+                        timezone=self.config.active_timezone,
+                    )
+                feed_snapshot = load_feed_snapshot(self.config) if schedule_active else inactive_snapshot()
+                # A fetch can cross the closing boundary. Never enable after it closes.
+                if schedule_active and not self.schedule.is_active():
+                    schedule_active = False
+                    feed_snapshot = inactive_snapshot()
                 previous_guard = self._load_bootstrap_guard(previous_runtime_state)
                 result = self._run_router_sync(feed_snapshot, previous_guard)
                 self._write_state(
                     status="dry_run" if result.dry_run else "success",
                     result=result,
+                    preserve_block_status=not schedule_active,
                     sync_id=sync_id,
                     previous_state=previous_runtime_state,
                 )
                 self._write_bootstrap_guard(result)
                 try:
-                    notification_result = send_notifications(self.config, result, previous_runtime_state)
+                    notification_result = (
+                        send_notifications(self.config, result, previous_runtime_state)
+                        if schedule_active
+                        else NotificationState()
+                    )
                     if notification_result.has_values:
                         notification_state_payload: dict[str, object] = {}
                         if notification_result.gotify_message_id is not None:
@@ -352,6 +377,7 @@ class StopLigaService:
                         self._write_state(
                             status="dry_run" if result.dry_run else "success",
                             result=result,
+                            preserve_block_status=not schedule_active,
                             sync_id=sync_id,
                             previous_state=previous_runtime_state,
                             notification_state=notification_state_payload,
@@ -407,7 +433,7 @@ class StopLigaService:
                 raise
             except StopLigaError as exc:
                 log_event(self.logger, logging.ERROR, "loop_iteration_failed", error=exc)
-            if stop_event.wait(self.config.interval_seconds):
+            if stop_event.wait(self.schedule.wait_seconds(self.config.interval_seconds)):
                 break
         log_event(self.logger, logging.INFO, "loop_stop")
         return 0

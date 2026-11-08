@@ -309,3 +309,45 @@ Current design intent:
 - backend-specific credentials and behavior stay grouped in their own sections
 
 That keeps Docker setup simple today while making it easier to introduce more router drivers later.
+
+## Optional active schedule
+
+Keep the container running and optionally restrict managed routing to local-time windows:
+
+```dotenv
+STOPLIGA_ACTIVE_DAYS=fri,sat,sun
+STOPLIGA_ACTIVE_HOURS=20:00-23:59
+STOPLIGA_ACTIVE_TIMEZONE=Europe/Madrid
+```
+
+Days use `mon` through `sun`. Days alone allow the whole selected day; hours alone
+apply every day. Multiple windows are comma-separated, e.g. `12:00-14:00,20:00-23:00`.
+Start times are inclusive and end times exclusive: `20:00-23:59` closes at 23:59.
+An overnight window such as `fri` with `22:00-02:00` includes Saturday until 02:00.
+Equal start and end times are rejected; omit hours for a full day.
+The timezone defaults to `UTC`; IANA zones follow daylight-saving changes.
+Repeated local hours are active on both occurrences and skipped hours do not occur.
+
+Inside the window, normal feed-based synchronization runs. Outside it, StopLiga
+explicitly disables the managed route/rule through the existing inactive-state
+handling, even if the feed is unavailable. Unrelated routes are untouched.
+Feed-status notifications are suppressed outside the window, preserving the last
+observed feed status. Dry run previews this without changing the router.
+The loop checks at least every minute when a schedule is configured; remote API
+latency or an unavailable router can delay enforcement. Once mode evaluates only
+at execution time and cannot enforce subsequent boundaries. Keep loop mode running.
+With no days or hours configured, existing polling behavior is unchanged.
+
+Equivalent TOML keys under `[app]` are `active_days`, `active_hours` and
+`active_timezone`; CLI options are `--active-days`, `--active-hours` and
+`--active-timezone`. CLI settings override environment variables, which override TOML.
+
+### UniFi: successful sync with no visible route
+
+`Route not created: no active destinations` means that the managed route was absent
+and the feed required no active destinations; no route was created. This is an
+intentional no-op, not proof of route creation. Check the feed/ISP filter and use
+`--once --dry-run --verbose` to inspect the planned action.
+Creation and updates are read back through the controller API before success is
+reported. A successful API readback does not prove that traffic traverses the VPN.
+See [UniFi Network 11 validation](docs/unifi-network-11-validation.md) for the tested build.

@@ -20,7 +20,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 
 RUN pip install --upgrade pip==26.1 setuptools==82.0.1 wheel==0.46.3 \
-    && pip install --no-cache-dir --no-deps .
+    && pip install --no-cache-dir .
 
 
 FROM ${PYTHON_BASE} AS runtime

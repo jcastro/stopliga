@@ -42,7 +42,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:${PATH}" \
     HOME="/home/stopliga" \
     STOPLIGA_STATE_FILE=/data/state.json \
-    STOPLIGA_LOCK_FILE=/data/stopliga.lock
+    STOPLIGA_LOCK_FILE=/data/stopliga.lock \
+    STOPLIGA_HEALTHCHECK_FILE=/data/.stopliga-health.json
 
 LABEL org.opencontainers.image.title="StopLiga" \
       org.opencontainers.image.description="Synchronize a managed router route or rule with live block status and a public IP feed." \

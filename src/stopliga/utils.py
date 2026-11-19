@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 from functools import lru_cache
+from http.client import HTTPException, IncompleteRead
 import ipaddress
 import json
 import random
@@ -15,6 +16,7 @@ from typing import Any, Iterable
 
 
 IpTokenSortKey = tuple[int, int, int, int]
+HTTP_TRANSPORT_ERRORS = (OSError, HTTPException)
 
 
 def sleep_with_backoff(attempt: int) -> None:
@@ -112,30 +114,10 @@ def _ssl_context(verify: bool, ca_file: str | None, stamp: int, epoch: int) -> s
 
 
 def read_limited(stream: Any, *, max_bytes: int, content_length: str | None = None) -> bytes:
-    """Read a response body with a hard safety ceiling."""
+    """Read a complete response body within a hard safety ceiling."""
 
-    if max_bytes < 1:
-        raise ValueError("max_bytes must be >= 1")
-    if content_length:
-        try:
-            declared = int(content_length)
-        except ValueError:
-            declared = None
-        else:
-            if declared is not None and declared > max_bytes:
-                raise ValueError(f"response content-length {declared} exceeds safety limit {max_bytes}")
-
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = stream.read(min(65536, max_bytes - total + 1))
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise ValueError(f"response body exceeds safety limit {max_bytes}")
-        chunks.append(chunk)
-    return b"".join(chunks)
+    reader = LimitedReader(stream, max_bytes, content_length)
+    return b"".join(iter(lambda: reader.read(65536), b""))
 
 
 def ensure_parent_dir(path: Path) -> None:
@@ -158,15 +140,19 @@ class LimitedReader(io.RawIOBase):
 
     def __init__(self, stream: Any, max_bytes: int, content_length: str | None = None):
         super().__init__()
+        if max_bytes < 1:
+            raise ValueError("max_bytes must be >= 1")
         self.stream = stream
         self.remaining = max_bytes
         self.position = 0
+        self.expected: int | None = None
         if content_length is not None:
             try:
-                if int(content_length) > max_bytes:
-                    raise ValueError("Response exceeds its size limit")
+                self.expected = int(content_length)
             except (TypeError, ValueError) as exc:
-                raise ValueError("Invalid or oversized Content-Length") from exc
+                raise ValueError("Invalid Content-Length") from exc
+            if not 0 <= self.expected <= max_bytes:
+                raise ValueError("Invalid or oversized Content-Length")
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
@@ -177,6 +163,8 @@ class LimitedReader(io.RawIOBase):
             raise ValueError("Response exceeds its size limit")
         self.remaining -= len(data)
         self.position += len(data)
+        if not data and self.expected is not None and self.position < self.expected:
+            raise IncompleteRead(b"", self.expected - self.position)
         return data
 
     def readinto(self, buffer: Any) -> int:

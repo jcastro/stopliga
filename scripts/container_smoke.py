@@ -71,13 +71,15 @@ def main():
         data.mkdir(mode=0o777)
         data.chmod(0o777)  # Only this disposable CI directory; application files must still be private.
         (project / "config").mkdir()
-        (project / "override.yml").write_text("services:\n  stopliga:\n    network_mode: host\n")
+        (project / "override.yml").write_text(
+            "services:\n  stopliga:\n    network_mode: host\n"
+            '    command: ["--loop", "--state-file", "/data/runtime-state.json"]\n'
+        )
         env_file = project / ".env"
         env_file.write_text(
             "\n".join(
                 [
                     f"STOPLIGA_IMAGE={image}",
-                    "STOPLIGA_RUN_MODE=loop",
                     "STOPLIGA_SYNC_INTERVAL_SECONDS=1",
                     "UNIFI_HOST=127.0.0.1",
                     f"UNIFI_PORT={unifi.base_url.rsplit(':', 1)[1]}",
@@ -108,7 +110,7 @@ def main():
 
         def persisted():
             response = exec_python(
-                "from pathlib import Path; p=Path('/data/state.json'); print(p.read_text() if p.exists() else '{}')",
+                "from pathlib import Path; p=Path('/data/runtime-state.json'); print(p.read_text() if p.exists() else '{}')",
                 check=False,
             )
             return json.loads(response.stdout) if response.returncode == 0 else {}
@@ -129,8 +131,10 @@ def main():
                 command(["docker", "exec", container, "/opt/venv/bin/python", "-m", "stopliga.healthcheck"]).returncode
                 == 0
             )
+            settings = exec_python("from pathlib import Path; print(Path('/data/.stopliga-health.json').read_text())")
+            assert json.loads(settings.stdout) == {"state_file": "/data/runtime-state.json", "max_age_seconds": 300}
             identity = exec_python(
-                "import os,stat,json; s=os.stat('/data/state.json'); print(json.dumps([os.getuid(),s.st_uid,stat.S_IMODE(s.st_mode)]))"
+                "import os,stat,json; s=os.stat('/data/runtime-state.json'); print(json.dumps([os.getuid(),s.st_uid,stat.S_IMODE(s.st_mode)]))"
             ).stdout
             assert json.loads(identity) == [10001, 10001, 0o600]
             report["checks"].append("compose_nonroot_cap_drop_readonly_volume_and_health")
@@ -188,7 +192,19 @@ def main():
                 "import pathlib,hashlib,json; print(json.dumps({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path('/data').iterdir()}))",
             ]
             before_files = command(probe).stdout
-            command(compose + ["run", "--rm", "--no-deps", "stopliga", "--once", "--dry-run"])
+            command(
+                compose
+                + [
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "stopliga",
+                    "--once",
+                    "--dry-run",
+                    "--state-file",
+                    "/data/runtime-state.json",
+                ]
+            )
             # Lock acquisition is operational; dry-run must not rewrite state or guard.
             before_hashes, after_hashes = json.loads(before_files), json.loads(command(probe).stdout)
             before_hashes.pop("stopliga.lock", None)

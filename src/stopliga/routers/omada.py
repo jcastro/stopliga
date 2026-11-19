@@ -27,7 +27,14 @@ from ..errors import (
 )
 from ..logging_utils import log_event
 from ..models import Config, FeedSnapshot, SyncResult
-from ..utils import compact_json_bytes, make_ssl_context, read_limited, sleep_with_backoff, sort_canonical_ip_tokens
+from ..utils import (
+    HTTP_TRANSPORT_ERRORS,
+    compact_json_bytes,
+    make_ssl_context,
+    read_limited,
+    sleep_with_backoff,
+    sort_canonical_ip_tokens,
+)
 from .base import BeforeWrite, BootstrapGuardClearer, BootstrapGuardWriter, RouterDriver
 
 
@@ -257,13 +264,15 @@ class OmadaClient:
                 raw = read_limited(exc, max_bytes=min(self.config.max_response_bytes, 256 * 1024))
             except ValueError:
                 raw = b"<oversized error response>"
+            except HTTP_TRANSPORT_ERRORS:
+                raw = b""
             finally:
                 exc.close()
             message = raw.decode("utf-8", errors="replace") if raw else str(exc)
             raise AuthenticationError(f"Omada authentication failed: HTTP {exc.code}: {message}") from exc
         except ValueError as exc:
             raise RemoteRequestError("Omada authentication response exceeded its size limit") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except HTTP_TRANSPORT_ERRORS as exc:
             raise NetworkError(f"Omada authentication failed: {exc}") from exc
 
         try:
@@ -308,7 +317,7 @@ class OmadaClient:
                         raw = read_limited(
                             response,
                             max_bytes=self.config.max_response_bytes,
-                            content_length=response.headers.get("Content-Length"),
+                            content_length=response.headers.get("Content-Length") if method.upper() != "HEAD" else None,
                         )
                         status = response.status
                 except urllib.error.HTTPError as exc:
@@ -370,7 +379,7 @@ class OmadaClient:
                     raise last_error from exc
                 except ValueError as exc:
                     raise RemoteRequestError("Omada response exceeded its size limit") from exc
-                except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                except HTTP_TRANSPORT_ERRORS as exc:
                     last_error = NetworkError(f"Network failure for {method} {path}: {exc}")
                     if attempt < attempts:
                         log_event(

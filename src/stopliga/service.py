@@ -76,38 +76,38 @@ class StopLigaService:
     def _load_bootstrap_guard(self, legacy_state: dict[str, object] | None = None) -> dict[str, object]:
         try:
             guard = self.bootstrap_guard_store.load()
-        except ConfigError as exc:
+        except (ConfigError, StateError) as exc:
+            fallback = self._bootstrap_guard_from_state(legacy_state)
             if self.config.dry_run:
                 log_event(self.logger, logging.WARNING, "invalid_state_preserved_in_dry_run", error=exc)
-                return {}
-            try:
-                bad_path = self.bootstrap_guard_store.quarantine_invalid_file()
-            except StateError as quarantine_exc:
-                log_event(
-                    self.logger,
-                    logging.WARNING,
-                    "bootstrap_guard_quarantine_failed",
-                    error=quarantine_exc,
-                    original_error=exc,
-                )
-            else:
-                log_event(
-                    self.logger,
-                    logging.WARNING,
-                    "bootstrap_guard_quarantined",
-                    path=self.config.bootstrap_guard_file,
-                    quarantined_to=bad_path,
-                    error=exc,
-                )
-            return {}
-        except StateError as exc:
-            log_event(self.logger, logging.WARNING, "bootstrap_guard_load_failed", error=exc)
-            return {}
-        if guard:
-            return guard
-        legacy = legacy_state if legacy_state is not None else self._load_runtime_state()
-        if any(legacy.get(key) for key in ("bootstrap_source", "bootstrap_network_id", "bootstrap_target_macs")):
-            return legacy
+                return fallback
+            if not fallback or isinstance(exc, StateError):
+                raise StateError(
+                    f"Cannot safely read bootstrap guard {self.config.bootstrap_guard_file}; "
+                    "inspect the guard and managed route before retrying"
+                ) from exc
+            bad_path = self.bootstrap_guard_store.quarantine_invalid_file()
+            log_event(
+                self.logger,
+                logging.WARNING,
+                "bootstrap_guard_quarantined",
+                path=self.config.bootstrap_guard_file,
+                quarantined_to=bad_path,
+                error=exc,
+            )
+            return fallback
+        return guard or self._bootstrap_guard_from_state(legacy_state)
+
+    def _bootstrap_guard_from_state(self, previous_state: dict[str, object] | None) -> dict[str, object]:
+        previous = previous_state if previous_state is not None else self._load_runtime_state()
+        if (
+            previous.get("route_name", self.config.route_name) == self.config.route_name
+            and previous.get("site", self.config.site) == self.config.site
+            and self._optional_str(previous, "bootstrap_source")
+            and self._optional_str(previous, "bootstrap_network_id")
+            and isinstance(previous.get("bootstrap_target_macs"), list)
+        ):
+            return previous
         return {}
 
     def _write_bootstrap_guard(self, result: SyncResult) -> None:
@@ -316,7 +316,7 @@ class StopLigaService:
         with log_context(sync_id=sync_id):
             log_event(
                 self.logger,
-                logging.INFO,
+                logging.DEBUG,
                 "sync_start",
                 route=self.config.route_name,
                 site=self.config.site,
@@ -372,7 +372,7 @@ class StopLigaService:
                 if self.schedule.configured:
                     log_event(
                         self.logger,
-                        logging.INFO,
+                        logging.DEBUG,
                         "schedule_check",
                         active=schedule_active,
                         timezone=self.config.active_timezone,
@@ -457,13 +457,19 @@ class StopLigaService:
                     log_event(self.logger, logging.WARNING, "notification_failed", error=exc)
                 # Notification retries can cross a closing boundary as well.
                 if schedule_active and not self.schedule.is_active():
-                    result = self._run_router_sync(inactive_snapshot(), self._load_bootstrap_guard())
+                    # The previous success cleared the durable marker. The closing update
+                    # needs its own marker and must keep any notification acknowledgments.
+                    previous_runtime_state = self._load_runtime_state()
+                    mutation_started = False
+                    result = self._run_router_sync(
+                        inactive_snapshot(), self._load_bootstrap_guard(previous_runtime_state)
+                    )
                     self._write_state(
                         status="dry_run" if result.dry_run else "success",
                         result=result,
                         preserve_block_status=True,
                         sync_id=sync_id,
-                        previous_state=self._load_runtime_state(),
+                        previous_state=previous_runtime_state,
                     )
                     self._write_bootstrap_guard(result)
                 log_event(

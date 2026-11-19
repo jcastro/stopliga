@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Retry incomplete HTTP downloads while keeping router writes with unknown outcomes pending for reconciliation.
+- Require a usable UniFi route inventory before bootstrap. Recover manual review from saved state when the bootstrap guard is damaged and record the fallback guard before creating a single-device route.
+- Record the scheduled closing update before sending it, including when notifications run past the closing time. Require an explicit rule state when verifying OPNsense changes.
+- Use the resolved state path and age limit in the container healthcheck, including command-line overrides.
+- Discard inactive feed entries during parsing while retaining freshness checks, operator filters and row counts. Show one summary for routine synchronization and keep the details at `DEBUG`.
+
 ## 0.1.31 — 2026-11-08
 
 ### Runtime and resources

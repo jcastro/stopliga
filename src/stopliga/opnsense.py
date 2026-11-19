@@ -8,7 +8,6 @@ import base64
 import json
 import logging
 import re
-import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,7 +25,14 @@ from .errors import (
 )
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot, SyncResult
-from .utils import compact_json_bytes, make_ssl_context, read_limited, sleep_with_backoff, sort_ip_tokens
+from .utils import (
+    HTTP_TRANSPORT_ERRORS,
+    compact_json_bytes,
+    make_ssl_context,
+    read_limited,
+    sleep_with_backoff,
+    sort_ip_tokens,
+)
 
 
 SAFE_RETRY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -51,6 +57,19 @@ def _is_truthy_flag(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return False
+
+
+def _rule_enabled(record: dict[str, Any]) -> bool:
+    value = record.get("enabled")
+    if isinstance(value, (bool, int)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        flag = value.strip().lower()
+        if flag in {"1", "true", "yes", "on"}:
+            return True
+        if flag in {"0", "false", "no", "off"}:
+            return False
+    raise RemoteRequestError("OPNsense rule does not report a valid enabled state")
 
 
 def parse_alias_content(alias_record: dict[str, Any]) -> list[str]:
@@ -147,7 +166,7 @@ class OPNsenseClient:
                         raw = read_limited(
                             response,
                             max_bytes=self.config.max_response_bytes,
-                            content_length=response.headers.get("Content-Length"),
+                            content_length=response.headers.get("Content-Length") if method_name != "HEAD" else None,
                         )
                     except ValueError as exc:
                         raise RemoteRequestError(f"{method_name} {path} returned an oversized response: {exc}") from exc
@@ -178,6 +197,8 @@ class OPNsenseClient:
                         )
                     except ValueError:
                         err_text = "<oversized error response>"
+                    except HTTP_TRANSPORT_ERRORS:
+                        err_text = "<incomplete error response>"
                     else:
                         err_text = err_raw.decode("utf-8", errors="replace")
                     if exc.code in {401, 403}:
@@ -200,7 +221,7 @@ class OPNsenseClient:
                     raise RemoteRequestError(f"{method_name} {path} returned {exc.code}: {err_text[:700]}") from exc
                 finally:
                     exc.close()
-            except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
+            except HTTP_TRANSPORT_ERRORS as exc:
                 last_error = exc
                 if attempt < attempts:
                     log_event(
@@ -338,7 +359,7 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot, *, client: OPNsen
     rule_id = str(rule.get("uuid", "")).strip() if rule else None
     if rule is not None and not rule_id:
         raise DiscoveryError("OPNsense rule does not expose a UUID")
-    current_enabled = _is_truthy_flag(rule.get("enabled")) if rule else None
+    current_enabled = _rule_enabled(rule) if rule else None
     alias_id = str(existing_alias.get("uuid", "")).strip() if existing_alias else None
     if existing_alias is not None and not alias_id:
         raise DiscoveryError("OPNsense alias does not expose a UUID")
@@ -379,7 +400,7 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot, *, client: OPNsen
             stage = "verify-rule"
             if rule_changed:
                 refreshed = client.search_rule(config.route_name)
-                if refreshed is None or _is_truthy_flag(refreshed.get("enabled")) != desired_enabled:
+                if refreshed is None or refreshed.get("uuid") != rule_id or _rule_enabled(refreshed) != desired_enabled:
                     raise RemoteRequestError("OPNsense rule did not keep its expected enabled state")
         except StopLigaError as exc:
             if isinstance(exc, NetworkError):
@@ -404,7 +425,11 @@ def sync_opnsense(config: Config, feed_snapshot: FeedSnapshot, *, client: OPNsen
                     client.apply_filter()
                 if "rule" in completed:
                     restored = client.search_rule(config.route_name)
-                    if restored is None or _is_truthy_flag(restored.get("enabled")) != current_enabled:
+                    if (
+                        restored is None
+                        or restored.get("uuid") != rule_id
+                        or _rule_enabled(restored) != current_enabled
+                    ):
                         raise RemoteRequestError("OPNsense rollback could not verify the original rule")
                 if "alias-create" in completed and client.search_alias(alias_name) is not None:
                     raise RemoteRequestError("OPNsense rollback left a newly created alias")

@@ -9,10 +9,10 @@ import ijson  # type: ignore[import-untyped]
 import json
 import logging
 import socket
-import ssl
 import zlib
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, overload
 from urllib.parse import urlparse, urlunparse
@@ -22,6 +22,7 @@ from .feed_policy import validate_feed_redirect_url
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot
 from .utils import (
+    HTTP_TRANSPORT_ERRORS,
     canonicalize_ip_token,
     canonicalize_ip_token_with_key,
     ip_token_sort_key,
@@ -47,6 +48,16 @@ HAYAHORA_HERO_DESCRIPTION = "Cloudflare"
 HAYAHORA_HERO_MIN_PROVIDER_MATCHES = 3
 HAYAHORA_HERO_MIN_CONFIRMED_IPS = 11
 HAYAHORA_HERO_SENTINEL_IPS = frozenset({"188.114.96.5", "188.114.97.5"})
+_TRUE_STATES = frozenset({"true", "1", "yes", "on", "blocked", "active", "enabled"})
+_FALSE_STATES = frozenset({"false", "0", "no", "off", "unblocked", "inactive", "disabled"})
+
+
+@dataclass(slots=True)
+class _HistoryScan:
+    payload: dict[str, Any]
+    inspected_entries: int
+    available_isps: dict[str, str]
+    latest_state_at: datetime | None
 
 
 class FeedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -78,9 +89,9 @@ def _truthy_state(value: Any) -> bool:
         return value
     if isinstance(value, str):
         normalized = value.strip().lower()
-        if normalized in {"true", "1", "yes", "on", "blocked", "active", "enabled"}:
+        if normalized in _TRUE_STATES:
             return True
-        if normalized in {"false", "0", "no", "off", "unblocked", "inactive", "disabled"}:
+        if normalized in _FALSE_STATES:
             return False
     raise InvalidFeedError(f"Unsupported status value: {value!r}")
 
@@ -241,7 +252,7 @@ def _hayahora_reference_time(payload: dict[str, Any]) -> datetime:
 
 
 def extract_hayahora_active_ips(
-    payload: dict[str, Any],
+    payload: dict[str, Any] | _HistoryScan,
     *,
     isp: str | None = None,
     lookback_hours: int = 24,
@@ -250,6 +261,10 @@ def extract_hayahora_active_ips(
 ) -> tuple[list[str], int, list[str]]:
     """Extract currently active Hayahora destinations, optionally filtered by ISP."""
 
+    scan = None
+    if isinstance(payload, _HistoryScan):
+        scan = payload
+        payload = scan.payload
     data = payload.get("data")
     if not isinstance(data, list):
         raise InvalidFeedError("Hayahora active destination mode requires a status payload with a data list")
@@ -258,18 +273,19 @@ def extract_hayahora_active_ips(
 
     target_isp = normalize_hayahora_isp(isp)
     cutoff = _hayahora_reference_time(payload) - timedelta(hours=lookback_hours)
-    available_isps: dict[str, str] = {}
+    available_isps = scan.available_isps if scan is not None else {}
     valid: dict[str, IpTokenSortKey] = {}
     invalid: list[str] = []
-    inspected = 0
+    inspected = scan.inspected_entries if scan is not None else 0
 
     for entry in data:
         if not isinstance(entry, dict):
             continue
-        inspected += 1
+        if scan is None:
+            inspected += 1
         if target_isp is not None:
             normalized_entry_isp = normalize_hayahora_isp(entry.get("isp"))
-            if normalized_entry_isp is not None:
+            if scan is None and normalized_entry_isp is not None:
                 available_isps.setdefault(normalized_entry_isp, str(entry.get("isp")).strip())
             if normalized_entry_isp != target_isp:
                 continue
@@ -345,7 +361,7 @@ def fetch_text(
     allow_private_hosts: bool = False,
     ca_file: Any = None,
     history: Literal[True],
-) -> dict[str, Any]: ...
+) -> _HistoryScan: ...
 
 
 @overload
@@ -372,8 +388,8 @@ def fetch_text(
     allow_private_hosts: bool = False,
     ca_file: Any = None,
     history: bool = False,
-) -> str | dict[str, Any]:
-    """Fetch a text payload over HTTP(S) with retries and explicit TLS control."""
+) -> str | _HistoryScan:
+    """Fetch text or a compact status scan over HTTP(S)."""
 
     logger = logging.getLogger("stopliga.feed")
     context = make_ssl_context(verify=verify_tls, ca_file=ca_file)
@@ -400,12 +416,10 @@ def fetch_text(
                         source = LimitedReader(response, max_bytes, response.headers.get("Content-Length"))
                         if response.headers.get("Content-Encoding", "").lower() == "gzip":
                             with gzip.GzipFile(fileobj=source) as compressed:
-                                return compact_history(LimitedReader(compressed, max_bytes))
-                        return compact_history(source)
+                                return _scan_history(LimitedReader(compressed, max_bytes))
+                        return _scan_history(source)
                     except ValueError as exc:
                         raise NetworkError(f"Unable to fetch {safe_url}: {exc}") from exc
-                    except (EOFError, gzip.BadGzipFile, zlib.error) as exc:
-                        raise NetworkError(f"Invalid compressed feed from {safe_url}") from exc
                 try:
                     body = read_limited(
                         response,
@@ -418,7 +432,7 @@ def fetch_text(
                     try:
                         with gzip.GzipFile(fileobj=io.BytesIO(body)) as compressed:
                             body = read_limited(compressed, max_bytes=max_bytes)
-                    except (OSError, EOFError, ValueError, zlib.error) as exc:
+                    except ValueError as exc:
                         raise NetworkError(f"Invalid or oversized compressed feed from {safe_url}") from exc
                 try:
                     return body.decode("utf-8")
@@ -442,7 +456,7 @@ def fetch_text(
                 sleep_with_backoff(attempt)
                 continue
             raise NetworkError(f"Unable to fetch {safe_url}: HTTP {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
+        except (*HTTP_TRANSPORT_ERRORS, EOFError, zlib.error) as exc:
             last_error = exc
             if attempt < retries:
                 log_event(
@@ -491,7 +505,7 @@ def _load_hayahora_canonical_status(config: Config) -> tuple[dict[str, Any], boo
     return parse_status_payload(raw_status_text)
 
 
-def _load_structured_hayahora_status(config: Config) -> dict[str, Any]:
+def _load_structured_hayahora_status(config: Config) -> _HistoryScan:
     status_url = config.status_url
     dns_host = _parse_dns_feed_host(status_url)
     if dns_host == HAYAHORA_DNS_STATUS_HOST:
@@ -509,36 +523,50 @@ def _load_structured_hayahora_status(config: Config) -> dict[str, Any]:
         ca_file=config.feed_ca_file,
         history=True,
     )
-    payload = raw_status_text if isinstance(raw_status_text, dict) else compact_history(raw_status_text)
-    if isinstance(payload.get("data"), list):
-        validate_feed_freshness(payload, config.feed_max_age_seconds)
+    scan = raw_status_text if isinstance(raw_status_text, _HistoryScan) else _scan_history(raw_status_text)
+    if isinstance(scan.payload.get("data"), list):
+        validate_feed_freshness(scan, config.feed_max_age_seconds)
     elif status_url == HAYAHORA_STATUS_JSON_URL:
         raise InvalidFeedError("Hayahora status payload must contain a data list")
-    return payload
+    return scan
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def validate_feed_freshness(payload: dict[str, Any], max_age_seconds: int) -> None:
+def validate_feed_freshness(payload: dict[str, Any] | _HistoryScan, max_age_seconds: int) -> None:
+    scan = None
+    if isinstance(payload, _HistoryScan):
+        scan = payload
+        payload = scan.payload
     reference = _parse_hayahora_timestamp(payload.get("lastUpdate"))
     if reference is None:
         raise InvalidFeedError("Status feed requires a valid lastUpdate timestamp")
     age = (_utcnow() - reference).total_seconds()
     if age > max_age_seconds or age < -300:
         raise InvalidFeedError("Status feed is stale or its lastUpdate is in the future; preserving remote state")
+    latest_allowed = reference + timedelta(seconds=300)
+    if scan is not None:
+        if scan.latest_state_at is not None and scan.latest_state_at > latest_allowed:
+            raise InvalidFeedError("Status feed contains a future state change")
+        return
     for entry in payload.get("data", []):
         if not isinstance(entry, dict):
             continue
         for change in entry.get("stateChanges", []):
             stamp = _parse_hayahora_timestamp(change.get("timestamp")) if isinstance(change, dict) else None
-            if stamp is not None and stamp > reference + timedelta(seconds=300):
+            if stamp is not None and stamp > latest_allowed:
                 raise InvalidFeedError("Status feed contains a future state change")
 
 
 def compact_history(raw_text: Any) -> dict[str, Any]:
-    """Parse history events incrementally, retaining only each entry's latest change."""
+    """Parse history and retain each entry's latest change."""
+    return _scan_history(raw_text, keep_inactive=True).payload
+
+
+def _scan_history(raw_text: Any, *, keep_inactive: bool = False) -> _HistoryScan:
+    """Retain candidate destinations and the metadata needed to validate all rows."""
     source = io.BytesIO(raw_text.encode("utf-8")) if isinstance(raw_text, str) else raw_text
     entry_keys = {"data.item.ip": "ip", "data.item.isp": "isp", "data.item.description": "description"}
     change_keys = {"data.item.stateChanges.item.state": "state", "data.item.stateChanges.item.timestamp": "timestamp"}
@@ -550,6 +578,9 @@ def compact_history(raw_text: Any) -> dict[str, Any]:
     latest_stamp: datetime | None = None
     data_seen = False
     root_seen = False
+    inspected_entries = 0
+    available_isps: dict[str, str] = {}
+    latest_state_at: datetime | None = None
     try:
         for prefix, event, value in ijson.parse(source):
             if prefix == "" and event == "start_map":
@@ -587,17 +618,28 @@ def compact_history(raw_text: Any) -> dict[str, Any]:
                     if latest is None or (stamp is not None and (latest_stamp is None or stamp >= latest_stamp)):
                         latest, latest_stamp = change, stamp
             elif prefix == "data.item" and event == "end_map":
+                inspected_entries += 1
+                if inspected_entries > 100_000:
+                    raise InvalidFeedError("Status feed exceeds the 100000-entry safety ceiling")
+                isp = entry.get("isp")
+                if (normalized := normalize_hayahora_isp(isp)) is not None:
+                    available_isps.setdefault(normalized, str(isp).strip())
+                if latest_stamp is not None and (latest_state_at is None or latest_stamp > latest_state_at):
+                    latest_state_at = latest_stamp
+                if not keep_inactive:
+                    if latest is None or latest["state"] is False:
+                        continue
+                    if isinstance(latest["state"], str) and latest["state"].strip().lower() in _FALSE_STATES:
+                        continue
                 entry["stateChanges"] = [latest] if latest is not None else []
                 entries.append(entry)
-                if len(entries) > 100_000:
-                    raise InvalidFeedError("Status feed exceeds the 100000-entry safety ceiling")
     except (UnicodeError, ijson.JSONError) as exc:
         raise InvalidFeedError("Status feed is not valid JSON") from exc
     if not root_seen:
         raise InvalidFeedError("Status feed must be a JSON object")
     if data_seen:
         payload["data"] = entries
-    return payload
+    return _HistoryScan(payload, inspected_entries, available_isps, latest_state_at)
 
 
 def _summarize_hayahora_active_status(
@@ -638,7 +680,7 @@ def resolve_dns_addresses(hostname: str, *, retries: int) -> list[str]:
             return [address for address in addresses if "/" not in address]
         except socket.gaierror as exc:
             if _is_dns_no_records_error(exc):
-                log_event(logging.getLogger("stopliga.feed"), logging.INFO, "dns_no_records", url=f"dns://{hostname}")
+                log_event(logging.getLogger("stopliga.feed"), logging.DEBUG, "dns_no_records", url=f"dns://{hostname}")
                 return []
             last_error = exc
             if attempt < retries:
@@ -726,15 +768,17 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
     logger = logging.getLogger("stopliga.feed")
     log_event(
         logger,
-        logging.INFO,
+        logging.DEBUG,
         "feed_check",
         status_url=_safe_log_url(config.status_url),
     )
+    scan = None
     dns_host = _parse_dns_feed_host(config.status_url)
     if dns_host is not None and dns_host != HAYAHORA_DNS_STATUS_HOST:
         status_payload, is_blocked = load_status_snapshot(config)
     else:
-        status_payload = _load_structured_hayahora_status(config)
+        scan = _load_structured_hayahora_status(config)
+        status_payload = scan.payload
     if not isinstance(status_payload.get("data"), list):
         raw_status, is_blocked = parse_status_payload_value(status_payload)
         text = fetch_text(
@@ -764,7 +808,7 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
             stable_hash({"status": raw_status, "destinations": destinations}),
         )
     destinations, raw_lines, invalid_entries = extract_hayahora_active_ips(
-        status_payload,
+        scan if scan is not None else status_payload,
         isp=config.hayahora_isp,
         lookback_hours=config.hayahora_lookback_hours,
         invalid_entry_policy=config.invalid_entry_policy,
@@ -804,7 +848,7 @@ def load_feed_snapshot(config: Config) -> FeedSnapshot:
     )
     log_event(
         logger,
-        logging.INFO,
+        logging.DEBUG,
         "feed_loaded",
         destination_source="hayahora_active",
         hayahora_isp=config.hayahora_isp,

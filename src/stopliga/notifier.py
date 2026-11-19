@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -14,7 +13,7 @@ from urllib.parse import urlparse, urlunparse
 from .errors import NetworkError, NotificationDeliveryError, StopLigaError
 from .logging_utils import log_event
 from .models import Config, SyncResult
-from .utils import compact_json_bytes, make_ssl_context, read_limited, sleep_with_backoff
+from .utils import HTTP_TRANSPORT_ERRORS, compact_json_bytes, make_ssl_context, read_limited, sleep_with_backoff
 
 DEFAULT_USER_AGENT = "stopliga/0.1.31"
 
@@ -117,7 +116,7 @@ def _post_json(
                 sleep_with_backoff(attempt)
                 continue
             raise NetworkError(f"Notification request failed for {safe_url}: HTTP {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
+        except HTTP_TRANSPORT_ERRORS as exc:
             if attempt < retries:
                 log_event(
                     logger,

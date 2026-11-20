@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.32 — 2026-11-20
 
 - Retry incomplete HTTP downloads while keeping router writes with unknown outcomes pending for reconciliation.
 - Require a usable UniFi route inventory before bootstrap. Recover manual review from saved state when the bootstrap guard is damaged and record the fallback guard before creating a single-device route.

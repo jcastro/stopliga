@@ -1,5 +1,5 @@
 ARG PYTHON_BASE=python:3.12-alpine@sha256:e064671ca452259bab50e8e2c7bd896e39e9a343bb06ca25234adf6fe18d0fc7
-ARG VERSION=0.1.31
+ARG VERSION=0.1.32
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga
@@ -31,7 +31,7 @@ RUN rm -rf /opt/venv/lib/python*/site-packages/pip* \
 
 FROM ${PYTHON_BASE} AS runtime
 
-ARG VERSION=0.1.31
+ARG VERSION=0.1.32
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga

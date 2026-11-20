@@ -1,5 +1,5 @@
 ARG PYTHON_BASE=python:3.12-alpine@sha256:e064671ca452259bab50e8e2c7bd896e39e9a343bb06ca25234adf6fe18d0fc7
-ARG VERSION=0.1.31
+ARG VERSION=0.1.32
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga
@@ -31,7 +31,7 @@ RUN rm -rf /opt/venv/lib/python*/site-packages/pip* \
 
 FROM ${PYTHON_BASE} AS runtime
 
-ARG VERSION=0.1.31
+ARG VERSION=0.1.32
 ARG BUILD_DATE=unknown
 ARG VCS_REF=unknown
 ARG SOURCE_URL=https://github.com/jcastro/stopliga
@@ -42,7 +42,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:${PATH}" \
     HOME="/home/stopliga" \
     STOPLIGA_STATE_FILE=/data/state.json \
-    STOPLIGA_LOCK_FILE=/data/stopliga.lock
+    STOPLIGA_LOCK_FILE=/data/stopliga.lock \
+    STOPLIGA_HEALTHCHECK_FILE=/data/.stopliga-health.json
 
 LABEL org.opencontainers.image.title="StopLiga" \
       org.opencontainers.image.description="Synchronize a managed router route or rule with live block status and a public IP feed." \

@@ -53,9 +53,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_healthcheck(config)
 
         from .service import StopLigaService
+        from .healthcheck import write_healthcheck_settings
 
         service = StopLigaService(config)
         with FileLock(config.lock_file):
+            write_healthcheck_settings(config)
             if config.run_mode == "loop":
                 stop_event = Event()
                 _install_signal_handlers(stop_event)

@@ -1,6 +1,7 @@
 """Behavioral regressions from the runtime/resource audit."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from http.client import IncompleteRead
 import gzip
 import io
 import json
@@ -12,22 +13,33 @@ import pytest
 from stopliga.config import build_parser, load_config, validate_config
 from stopliga.errors import (
     ConfigError,
+    DiscoveryError,
+    HTTPStatusError,
     DuplicateRouteError,
     InvalidFeedError,
     NetworkError,
     PartialUpdateError,
     ReconciliationRequiredError,
     RemoteRequestError,
+    StateError,
     UnsupportedRouteShapeError,
 )
 from stopliga.feed import compact_history, fetch_text, load_feed_snapshot, validate_feed_freshness
+from stopliga.healthcheck import main as main_healthcheck, write_healthcheck_settings
 from stopliga.models import Config, FeedSnapshot, SiteContext, SyncResult
-from stopliga.opnsense import OPNsenseClient
+from stopliga.notifier import NotificationState
+from stopliga.opnsense import OPNsenseClient, sync_opnsense
 from stopliga.routers.omada import OmadaClient, OmadaRouterDriver
-from stopliga.routers.unifi import UniFiClient, UniFiRouterDriver, V2TrafficRoutesBackend, apply_plan
+from stopliga.routers.unifi import (
+    UniFiClient,
+    UniFiRouterDriver,
+    V2TrafficRoutesBackend,
+    apply_plan,
+    choose_existing_route_backend,
+)
 from stopliga.service import StopLigaService
 from stopliga.state import StateStore
-from stopliga.schedule import ActiveSchedule
+from stopliga.schedule import ActiveSchedule, inactive_snapshot
 
 
 def feed(enabled=True):
@@ -375,7 +387,8 @@ def test_history_download_parses_the_bounded_stream(compressed):
     opener.open.return_value = response
     with patch("stopliga.feed.urllib.request.build_opener", return_value=opener):
         parsed = fetch_text("https://feed.invalid", timeout=1, retries=1, verify_tls=True, max_bytes=1024, history=True)
-    assert parsed == payload
+    assert parsed.payload == payload
+    assert parsed.inspected_entries == 1
 
 
 def test_compressed_history_expansion_cannot_bypass_limit():
@@ -466,3 +479,207 @@ def test_opnsense_never_enables_rule_with_unverified_alias():
         sync_opnsense(Config(router_type="opnsense"), feed(), client=client)
     assert caught.value.rollback_completed is True
     client.toggle_rule.assert_not_called()
+
+
+@pytest.mark.parametrize("history", [False, True])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_feed_retries_a_response_cut_short(history, chunked):
+    body = b'{"lastUpdate":"2026-04-23T09:30:00Z","data":[]}'
+    complete = io.BytesIO(body)
+    complete.headers = {"Content-Length": str(len(body))}
+    if chunked:
+        truncated = MagicMock()
+        truncated.headers = {"Transfer-Encoding": "chunked"}
+        truncated.__enter__.return_value = truncated
+        truncated.read.side_effect = IncompleteRead(b"", len(body))
+    else:
+        truncated = io.BytesIO(body[:-3])
+        truncated.headers = complete.headers
+    opener = Mock()
+    opener.open.side_effect = [truncated, complete]
+    with (
+        patch("stopliga.feed.urllib.request.build_opener", return_value=opener),
+        patch("stopliga.feed.sleep_with_backoff"),
+    ):
+        value = fetch_text(
+            "https://feed.invalid", timeout=1, retries=2, verify_tls=True, max_bytes=1024, history=history
+        )
+    assert opener.open.call_count == 2
+    assert (value.payload if history else json.loads(value)) == json.loads(body)
+
+
+def test_unifi_does_not_retry_a_write_with_an_incomplete_response():
+    client = UniFiClient(Config(host="router.invalid", api_key="dummy", retries=4))
+    client.opener = MagicMock()
+    response = client.opener.open.return_value.__enter__.return_value
+    response.headers = {}
+    response.read.side_effect = IncompleteRead(b"", 10)
+    with pytest.raises(NetworkError):
+        client.request("PUT", "/routes/test", json_body={"enabled": False}, retriable=True)
+    assert client.opener.open.call_count == 1
+
+
+def test_unifi_does_not_treat_an_incomplete_inventory_as_absence():
+    client = Mock()
+    primary = Mock(backend_name="v2")
+    primary.list_routes.side_effect = NetworkError("route listing timed out")
+    legacy = Mock(backend_name="legacy")
+    legacy.list_routes.return_value = "/legacy/routes", []
+    with patch("stopliga.routers.unifi.available_backends", return_value=[primary, legacy]):
+        with pytest.raises(DiscoveryError, match="timed out"):
+            choose_existing_route_backend(client, SiteContext("default"), "StopLiga")
+
+
+def test_unifi_still_reads_legacy_routes_when_v2_is_unsupported():
+    client = Mock()
+    primary = Mock(backend_name="v2")
+    primary.list_routes.side_effect = HTTPStatusError(404, "endpoint not available")
+    legacy = Mock(backend_name="legacy")
+    expected = {"_id": "r", "description": "StopLiga"}
+    legacy.list_routes.return_value = "/legacy/routes", [expected]
+    with patch("stopliga.routers.unifi.available_backends", return_value=[primary, legacy]):
+        assert choose_existing_route_backend(client, SiteContext("default"), "StopLiga") == (
+            legacy,
+            "/legacy/routes",
+            expected,
+        )
+
+
+def test_interrupted_scheduled_close_keeps_pending_write_and_notification_ack(tmp_path):
+    config = config_in(tmp_path, active_hours="20:00-21:00", gotify_url="https://gotify.invalid", gotify_token="dummy")
+    store = StateStore(config.state_file)
+    service = StopLigaService(config)
+    store.write_payload({"last_is_blocked": False})
+
+    class Driver:
+        def sync(self, snapshot, guard, *, before_write, **kwargs):
+            before_write()
+            if not snapshot.desired_enabled:
+                raise SystemExit("simulated stop after the closing write")
+            return result()
+
+    with (
+        patch.object(service.schedule, "is_active", side_effect=[True, True, True, False]),
+        patch("stopliga.service.load_feed_snapshot", return_value=feed()),
+        patch("stopliga.service.create_router_driver", return_value=Driver()),
+        patch("stopliga.service.send_notifications", return_value=NotificationState(delivered_providers=("gotify",))),
+        pytest.raises(SystemExit),
+    ):
+        service.run_once()
+
+    state = store.load()
+    assert state["status"] == "applying"
+    assert state["reconciliation_required"] is True
+    assert state["last_notified_blocked"] == {"gotify": True}
+    assert state["notification_pending"] == {}
+    assert not store.healthcheck(900)[0]
+    with pytest.raises(ReconciliationRequiredError):
+        StopLigaService(config).run_once()
+
+
+def test_corrupt_bootstrap_guard_recovers_manual_review_from_state(tmp_path):
+    config = config_in(tmp_path)
+    config.bootstrap_guard_file.write_text("{bad")
+    saved = {
+        "route_name": config.route_name,
+        "site": config.site,
+        "bootstrap_source": "auto-bootstrap-device-fallback",
+        "bootstrap_network_id": "test-network",
+        "bootstrap_target_macs": ["aa:bb:cc:dd:ee:01"],
+    }
+    StateStore(config.state_file).write_payload(saved)
+    service = StopLigaService(config)
+    route = {"network_id": "test-network", "target_devices": [{"client_mac": "aa:bb:cc:dd:ee:01"}]}
+    guard = service._load_bootstrap_guard()
+    assert UniFiRouterDriver(config)._is_pending_auto_bootstrap(route, guard)
+    assert not config.bootstrap_guard_file.exists()
+    assert len(list(tmp_path.glob("guard.json.bad-*"))) == 1
+
+
+def test_unrecoverable_bootstrap_guard_stays_blocked_on_restart(tmp_path):
+    config = config_in(tmp_path)
+    config.bootstrap_guard_file.write_text("{bad")
+    for _ in range(2):
+        with pytest.raises(StateError, match="Cannot safely read bootstrap guard"):
+            StopLigaService(config)._load_bootstrap_guard()
+        assert config.bootstrap_guard_file.read_text() == "{bad"
+
+
+def test_image_healthcheck_uses_the_effective_state_path_and_loop_age(tmp_path, monkeypatch):
+    settings = tmp_path / "health.json"
+    default_state = tmp_path / "default.json"
+    actual_state = tmp_path / "actual.json"
+    monkeypatch.setenv("STOPLIGA_HEALTHCHECK_FILE", str(settings))
+    monkeypatch.setenv("STOPLIGA_STATE_FILE", str(default_state))
+    now = datetime.now(timezone.utc)
+    StateStore(default_state).write_payload({"status": "success", "last_success_at": now.isoformat()})
+    StateStore(actual_state).write_payload(
+        {"status": "success", "last_success_at": (now - timedelta(minutes=20)).isoformat()}
+    )
+    config = load_config(build_parser().parse_args(["--loop", "--state-file", str(actual_state)]), validate=False)
+    write_healthcheck_settings(config)
+    assert main_healthcheck() == 1
+    StateStore(actual_state).write_payload({"status": "success", "last_success_at": now.isoformat()})
+    assert main_healthcheck() == 0
+
+
+def test_history_omits_inactive_rows_but_retains_provider_and_freshness_checks():
+    inactive = {
+        "ip": "192.0.2.1",
+        "isp": "Known ISP",
+        "stateChanges": [{"timestamp": "2026-04-23T09:00:00Z", "state": "false"}],
+    }
+    active = {
+        "ip": "192.0.2.2",
+        "isp": "Another ISP",
+        "stateChanges": [{"timestamp": "2026-04-23T09:00:00Z", "state": True}],
+    }
+    payload = {"lastUpdate": "2026-04-23T09:15:00Z", "isBlocked": True, "data": [inactive, active]}
+    with patch("stopliga.feed.fetch_text", return_value=json.dumps(payload)):
+        snapshot = load_feed_snapshot(Config(hayahora_isp="known isp"))
+    assert snapshot.destinations == []
+    assert snapshot.raw_line_count == 2
+    assert snapshot.is_blocked is True
+    assert snapshot.desired_enabled is False
+
+    inactive["stateChanges"][0]["timestamp"] = "2026-04-23T09:25:00Z"
+    with patch("stopliga.feed.fetch_text", return_value=json.dumps(payload)):
+        with pytest.raises(InvalidFeedError, match="future state change"):
+            load_feed_snapshot(Config(hayahora_isp="Another ISP"))
+
+
+def test_opnsense_cannot_verify_disabled_rule_without_enabled_field():
+    client = Mock()
+    client.search_alias.return_value = None
+    original = {"uuid": "r", "enabled": "1"}
+    client.search_rule.side_effect = [original, {"uuid": "r"}, original]
+    with pytest.raises(PartialUpdateError, match="valid enabled state") as caught:
+        sync_opnsense(Config(router_type="opnsense"), inactive_snapshot(), client=client)
+    assert caught.value.rollback_completed is True
+
+
+def test_unifi_records_single_device_guard_before_fallback_creation():
+    driver = UniFiRouterDriver(Config())
+    client = Mock()
+    client.resolve_site_context.return_value = SiteContext("default")
+    client.pick_default_vpn_network.return_value = {"_id": "test-network"}
+    client.pick_default_target_device.return_value = {"type": "CLIENT", "client_mac": "aa:bb:cc:dd:ee:01"}
+    backend = Mock(backend_name="v2")
+    guard_writer = Mock()
+    guard_clearer = Mock()
+
+    def create_route(payload):
+        if payload["target_devices"] == [{"type": "ALL_CLIENTS"}]:
+            raise HTTPStatusError(400, "ALL_CLIENTS rejected")
+        guard_writer.assert_called_with("auto-bootstrap-device-fallback", "test-network", ("aa:bb:cc:dd:ee:01",))
+        raise NetworkError("creation response lost")
+
+    backend.create_route.side_effect = create_route
+    with (
+        patch("stopliga.routers.unifi.UniFiClient", return_value=client),
+        patch("stopliga.routers.unifi._discover_route", return_value=(backend, "/routes", None)),
+        pytest.raises(PartialUpdateError, match="fallback creation outcome"),
+    ):
+        driver.sync(feed(), {}, guard_writer=guard_writer, guard_clearer=guard_clearer)
+    assert backend.create_route.call_count == 2
+    guard_clearer.assert_not_called()

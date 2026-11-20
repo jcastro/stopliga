@@ -25,6 +25,14 @@ class RemoteRequestError(StopLigaError):
     """Raised when a remote endpoint returns an invalid or unexpected response."""
 
 
+class HTTPStatusError(RemoteRequestError):
+    """A non-success HTTP response with a known status code."""
+
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class InvalidFeedError(StopLigaError):
     """Raised when the GitHub feed is malformed or unsafe to apply."""
 

@@ -73,7 +73,7 @@ def _event_message(event: str | None, fields: dict[str, Any]) -> str | None:
             return "Route needs manual review before activation"
         if fields.get("current_enabled") != fields.get("desired_enabled"):
             return "Route enabled state needs update"
-        if fields.get("current_destinations") != fields.get("desired_destinations"):
+        if fields.get("route_changed_fields") or fields.get("linked_list_changed_fields"):
             return "Route destination list needs update"
         return "Route already in sync"
     if event == "route_ip_delta":

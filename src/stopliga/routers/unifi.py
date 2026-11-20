@@ -9,7 +9,6 @@ import http.cookiejar
 import json
 import logging
 import re
-import ssl
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +19,7 @@ from ..errors import (
     ConfigError,
     DiscoveryError,
     DuplicateRouteError,
+    HTTPStatusError,
     NetworkError,
     PartialUpdateError,
     RemoteRequestError,
@@ -30,6 +30,7 @@ from ..errors import (
 from ..logging_utils import log_event
 from ..models import BootstrapPreview, Config, FeedSnapshot, SiteContext, SyncResult, UpdatePlan
 from ..utils import (
+    HTTP_TRANSPORT_ERRORS,
     IpTokenSortKey,
     canonicalize_ip_token_with_key,
     compact_json_bytes,
@@ -81,6 +82,16 @@ DESTINATION_UPDATE_FIELDS = frozenset(
     }
 )
 VPN_CLIENT_NETWORK_REQUIRED_URL = "https://github.com/jcastro/stopliga/blob/main/README.md#vpn-client-network-required"
+
+
+class _ApplicationRejection(RemoteRequestError):
+    """The UniFi API explicitly rejected a request."""
+
+
+def _creation_rejected(exc: StopLigaError) -> bool:
+    return isinstance(exc, _ApplicationRejection) or (
+        isinstance(exc, HTTPStatusError) and exc.status_code in (400, 422)
+    )
 
 
 def extract_records(payload: Any) -> list[dict[str, Any]]:
@@ -501,7 +512,7 @@ class UniFiClient:
             headers["X-CSRF-Token"] = self.csrf_token
 
         url = self._build_url(path)
-        should_retry = retriable if retriable is not None else method_name in SAFE_RETRY_METHODS
+        should_retry = method_name in SAFE_RETRY_METHODS and retriable is not False
         attempts = max(1, self.config.retries) if should_retry else 1
         last_error: Exception | None = None
 
@@ -514,7 +525,7 @@ class UniFiClient:
                         raw = read_limited(
                             response,
                             max_bytes=self.config.max_response_bytes,
-                            content_length=response.headers.get("Content-Length"),
+                            content_length=response.headers.get("Content-Length") if method_name != "HEAD" else None,
                         )
                     except ValueError as exc:
                         raise RemoteRequestError(f"{method} {path} returned an oversized response: {exc}") from exc
@@ -529,7 +540,7 @@ class UniFiClient:
                         payload = json.loads(text)
                         meta = payload.get("meta") if isinstance(payload, dict) else None
                         if isinstance(meta, dict) and meta.get("rc") not in (None, "ok"):
-                            raise RemoteRequestError(f"{method} {path} returned an application-level error")
+                            raise _ApplicationRejection(f"{method} {path} returned an application-level error")
                         return payload
                     except json.JSONDecodeError as exc:
                         raise RemoteRequestError(f"{method} {path} returned invalid JSON: {text[:500]}") from exc
@@ -543,6 +554,8 @@ class UniFiClient:
                         )
                     except ValueError:
                         body = "<oversized error response>"
+                    except HTTP_TRANSPORT_ERRORS:
+                        body = "<incomplete error response>"
                     else:
                         body = error_bytes.decode("utf-8", errors="replace")
                     self._update_csrf_token(exc.headers)
@@ -566,10 +579,10 @@ class UniFiClient:
                         )
                         sleep_with_backoff(attempt)
                         continue
-                    raise RemoteRequestError(f"{method_name} {path} returned {exc.code}: {body[:700]}") from exc
+                    raise HTTPStatusError(exc.code, f"{method_name} {path} returned {exc.code}: {body[:700]}") from exc
                 finally:
                     exc.close()
-            except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
+            except HTTP_TRANSPORT_ERRORS as exc:
                 last_error = exc
                 if attempt < attempts:
                     log_event(
@@ -876,7 +889,16 @@ class BaseRouteBackend:
         self.linked_lists = LinkedTrafficMatchingListHelper(client, site_context)
 
     def list_routes(self) -> tuple[str, list[dict[str, Any]]]:
-        raise NotImplementedError
+        endpoint = self.collection_endpoint()
+        payload = self.client.request("GET", endpoint)
+        if isinstance(payload, dict):
+            payload = next(
+                (payload[key] for key in ("data", "results", "items", "sites") if isinstance(payload.get(key), list)),
+                None,
+            )
+        if not isinstance(payload, list) or any(not isinstance(record, dict) for record in payload):
+            raise DiscoveryError(f"Endpoint {endpoint} returned an incomplete route inventory")
+        return endpoint, payload
 
     def collection_endpoint(self) -> str:
         raise NotImplementedError
@@ -1108,13 +1130,6 @@ class V2TrafficRoutesBackend(BaseRouteBackend):
         prefix = self.client.discover_network_prefix()
         return f"{prefix}/v2/api/site/{self.site_context.internal_name}/trafficroutes"
 
-    def list_routes(self) -> tuple[str, list[dict[str, Any]]]:
-        endpoint = self.collection_endpoint()
-        payload = self.client.request("GET", endpoint)
-        if not isinstance(payload, (dict, list)):
-            raise DiscoveryError(f"Endpoint {endpoint} returned an unsupported shape")
-        return endpoint, extract_records(payload)
-
 
 class LegacyTrafficRouteRestBackend(BaseRouteBackend):
     """Legacy trafficroute REST backend."""
@@ -1125,16 +1140,52 @@ class LegacyTrafficRouteRestBackend(BaseRouteBackend):
         prefix = self.client.discover_network_prefix()
         return f"{prefix}/api/s/{self.site_context.internal_name}/rest/trafficroute"
 
-    def list_routes(self) -> tuple[str, list[dict[str, Any]]]:
-        endpoint = self.collection_endpoint()
-        payload = self.client.request("GET", endpoint)
-        if not isinstance(payload, (dict, list)):
-            raise DiscoveryError(f"Endpoint {endpoint} returned an unsupported shape")
-        return endpoint, extract_records(payload)
-
 
 def available_backends(client: UniFiClient, site_context: SiteContext) -> list[BaseRouteBackend]:
     return [V2TrafficRoutesBackend(client, site_context), LegacyTrafficRouteRestBackend(client, site_context)]
+
+
+def _discover_route(
+    client: UniFiClient,
+    site_context: SiteContext,
+    route_name_value: str,
+) -> tuple[BaseRouteBackend, str, dict[str, Any] | None]:
+    """Use the first matching API or establish absence before allowing creation."""
+
+    first_available: tuple[BaseRouteBackend, str] | None = None
+    unsupported: list[str] = []
+    for backend in available_backends(client, site_context):
+        try:
+            endpoint, routes = backend.list_routes()
+        except AuthenticationError:
+            raise
+        except StopLigaError as exc:
+            if isinstance(exc, HTTPStatusError) and exc.status_code in (404, 405, 501):
+                unsupported.append(backend.backend_name)
+                continue
+            raise DiscoveryError(f"Unable to inspect routes through {backend.backend_name}: {exc}") from exc
+
+        if first_available is None:
+            first_available = (backend, endpoint)
+        matches = find_matching_routes(routes, route_name_value)
+        if len(matches) > 1:
+            raise DuplicateRouteError(
+                f"Route {route_name_value!r} matched multiple entries in backend {backend.backend_name}"
+            )
+        if matches:
+            log_event(
+                logging.getLogger("stopliga.route"),
+                logging.DEBUG,
+                "route_found",
+                backend=backend.backend_name,
+                endpoint=endpoint,
+                route=route_name_value,
+            )
+            return backend, endpoint, matches[0]
+
+    if first_available is None:
+        raise DiscoveryError(f"No supported UniFi route API found: {', '.join(unsupported)}")
+    return first_available[0], first_available[1], None
 
 
 def choose_existing_route_backend(
@@ -1144,51 +1195,16 @@ def choose_existing_route_backend(
 ) -> tuple[BaseRouteBackend, str, dict[str, Any]]:
     """Find the backend containing the requested route."""
 
-    errors: list[str] = []
-    any_backend_reachable = False
-    for backend in available_backends(client, site_context):
-        try:
-            endpoint, routes = backend.list_routes()
-            any_backend_reachable = True
-            matches = find_matching_routes(routes, route_name_value)
-            if not matches:
-                continue
-            if len(matches) > 1:
-                raise DuplicateRouteError(
-                    f"Route {route_name_value!r} matched multiple entries in backend {backend.backend_name}"
-                )
-            route_record = matches[0]
-            log_event(
-                logging.getLogger("stopliga.route"),
-                logging.INFO,
-                "route_found",
-                backend=backend.backend_name,
-                endpoint=endpoint,
-                route=route_name_value,
-            )
-            return backend, endpoint, route_record
-        except DuplicateRouteError:
-            raise
-        except StopLigaError as exc:
-            errors.append(f"{backend.backend_name}: {exc}")
-    if not any_backend_reachable:
-        raise DiscoveryError(
-            f"Unable to inspect route backends while looking for {route_name_value!r}. " + " | ".join(errors)
-        )
-    raise RouteNotFoundError(f"Unable to find route {route_name_value!r}. " + " | ".join(errors))
+    backend, endpoint, route = _discover_route(client, site_context, route_name_value)
+    if route is None:
+        raise RouteNotFoundError(f"Unable to find route {route_name_value!r}")
+    return backend, endpoint, route
 
 
 def choose_create_backend(client: UniFiClient, site_context: SiteContext) -> BaseRouteBackend:
-    """Find a backend whose collection endpoint is reachable for bootstrap."""
-
-    errors: list[str] = []
-    for backend in available_backends(client, site_context):
-        try:
-            backend.list_routes()
-            return backend
-        except StopLigaError as exc:
-            errors.append(f"{backend.backend_name}: {exc}")
-    raise DiscoveryError("Unable to find a writable route backend for bootstrap. " + " | ".join(errors))
+    """Find a backend whose collection endpoint can be used for bootstrap."""
+    backend, _, _ = _discover_route(client, site_context, client.config.route_name)
+    return backend
 
 
 def build_direct_bootstrap_payload(
@@ -1469,7 +1485,7 @@ class UniFiRouterDriver(RouterDriver):
 
         log_event(
             self.logger,
-            logging.INFO,
+            logging.DEBUG,
             "route_check",
             backend=plan.backend_name,
             route=plan.route_label,
@@ -1549,7 +1565,7 @@ class UniFiRouterDriver(RouterDriver):
         self._log_plan_details(plan=plan, pending_manual_review=pending_manual_review)
         log_event(
             self.logger,
-            logging.INFO,
+            logging.INFO if plan.has_changes or self.config.dry_run else logging.DEBUG,
             "route_plan",
             route=plan.route_label,
             changed=plan.has_changes,
@@ -1567,9 +1583,9 @@ class UniFiRouterDriver(RouterDriver):
     def _bootstrap_route(
         self,
         client: UniFiClient,
+        backend: BaseRouteBackend,
         desired_ips: list[str],
-    ) -> tuple[BaseRouteBackend, BootstrapPreview]:
-        create_backend = choose_create_backend(client, client.resolve_site_context())
+    ) -> BootstrapPreview:
         if self.config.vpn_name:
             vpn_network = client.resolve_vpn_network(self.config.vpn_name)
             if self.config.target_clients:
@@ -1608,14 +1624,7 @@ class UniFiRouterDriver(RouterDriver):
                 target_devices=[ALL_CLIENTS_TARGET],
             )
             source = "auto-bootstrap"
-        return (
-            create_backend,
-            BootstrapPreview(
-                backend_name=create_backend.backend_name,
-                payload=payload,
-                source=source,
-            ),
-        )
+        return BootstrapPreview(backend_name=backend.backend_name, payload=payload, source=source)
 
     def sync(
         self,
@@ -1638,15 +1647,12 @@ class UniFiRouterDriver(RouterDriver):
         bootstrap_network_id: str | None = None
         bootstrap_target_macs: tuple[str, ...] = ()
 
-        try:
-            backend, endpoint, route_record = choose_existing_route_backend(
-                client, site_context, self.config.route_name
-            )
-        except RouteNotFoundError:
+        backend, endpoint, route_record = _discover_route(client, site_context, self.config.route_name)
+        if route_record is None:
             if not feed_snapshot.desired_enabled and not feed_snapshot.destinations:
                 log_event(
                     self.logger,
-                    logging.INFO,
+                    logging.DEBUG,
                     "route_missing_noop",
                     route=self.config.route_name,
                     reason="no_active_destinations",
@@ -1670,7 +1676,7 @@ class UniFiRouterDriver(RouterDriver):
                     summary="route missing; no active destinations",
                     is_blocked=feed_snapshot.is_blocked,
                 )
-            bootstrap_backend, preview = self._bootstrap_route(client, feed_snapshot.destinations)
+            preview = self._bootstrap_route(client, backend, feed_snapshot.destinations)
             log_event(
                 self.logger,
                 logging.INFO,
@@ -1711,19 +1717,9 @@ class UniFiRouterDriver(RouterDriver):
                     self._route_target_macs(preview.payload),
                 )
             try:
-                endpoint, route_record = bootstrap_backend.create_route(preview.payload)
-            except StopLigaError as exc:
-                if isinstance(exc, NetworkError):
-                    raise PartialUpdateError(
-                        "route-create",
-                        ("uncertain-write",),
-                        "UniFi route creation outcome is unknown; refusing a second POST",
-                    ) from exc
-                if not isinstance(exc, RemoteRequestError):
-                    raise
-                if not any(
-                    marker in str(exc) for marker in ("returned 400:", "returned 422:", "application-level error")
-                ):
+                endpoint, route_record = backend.create_route(preview.payload)
+            except (NetworkError, RemoteRequestError, DiscoveryError) as exc:
+                if not _creation_rejected(exc):
                     raise PartialUpdateError(
                         "route-create",
                         ("uncertain-write",),
@@ -1745,10 +1741,16 @@ class UniFiRouterDriver(RouterDriver):
                         source=fallback_source,
                         reason="all_clients_target_rejected",
                     )
+                    # Keep the single-device review guard even if the result of the POST is lost.
+                    guard_writer(
+                        fallback_source,
+                        str(fallback_payload.get("network_id") or "") or None,
+                        self._route_target_macs(fallback_payload),
+                    )
                     try:
-                        endpoint, route_record = bootstrap_backend.create_route(fallback_payload)
-                    except StopLigaError as fallback_exc:
-                        if isinstance(fallback_exc, NetworkError):
+                        endpoint, route_record = backend.create_route(fallback_payload)
+                    except (NetworkError, RemoteRequestError, DiscoveryError) as fallback_exc:
+                        if not _creation_rejected(fallback_exc):
                             raise PartialUpdateError(
                                 "route-create",
                                 ("uncertain-write",),
@@ -1764,11 +1766,6 @@ class UniFiRouterDriver(RouterDriver):
                         payload=fallback_payload,
                         source=fallback_source,
                     )
-                    guard_writer(
-                        applied_preview.source,
-                        str(applied_preview.payload.get("network_id") or "") or None,
-                        self._route_target_macs(applied_preview.payload),
-                    )
                 else:
                     guard_clearer()
                     raise RouteNotFoundError(
@@ -1778,7 +1775,6 @@ class UniFiRouterDriver(RouterDriver):
             bootstrap_source = applied_preview.source
             bootstrap_network_id = str(applied_preview.payload.get("network_id") or "") or None
             bootstrap_target_macs = self._route_target_macs(applied_preview.payload)
-            backend = bootstrap_backend
 
         return self._plan_route_update(
             backend=backend,

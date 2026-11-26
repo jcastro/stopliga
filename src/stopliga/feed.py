@@ -14,10 +14,11 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from math import ceil
 from typing import Any, Literal, overload
 from urllib.parse import urlparse, urlunparse
 
-from .errors import ConfigError, InvalidFeedError, NetworkError
+from .errors import ConfigError, InvalidFeedError, NetworkError, StaleFeedError
 from .feed_policy import validate_feed_redirect_url
 from .logging_utils import log_event
 from .models import Config, FeedSnapshot
@@ -35,7 +36,7 @@ from .utils import (
     sort_ip_tokens,
 )
 
-DEFAULT_USER_AGENT = "stopliga/0.1.32"
+DEFAULT_USER_AGENT = "stopliga/0.1.33"
 HAYAHORA_DNS_STATUS_HOST = "blocked.dns.hayahora.futbol"
 HAYAHORA_STATUS_JSON_URL = "https://hayahora.futbol/estado/data.json"
 # Hayahora's canonical JSON feed is historical and keeps growing over time,
@@ -544,8 +545,16 @@ def validate_feed_freshness(payload: dict[str, Any] | _HistoryScan, max_age_seco
     if reference is None:
         raise InvalidFeedError("Status feed requires a valid lastUpdate timestamp")
     age = (_utcnow() - reference).total_seconds()
-    if age > max_age_seconds or age < -300:
-        raise InvalidFeedError("Status feed is stale or its lastUpdate is in the future; preserving remote state")
+    if age > max_age_seconds:
+        raise StaleFeedError(
+            f"Status feed is stale (lastUpdate={reference.isoformat()}, age={ceil(age)}s, limit={max_age_seconds}s). "
+            "Preserving remote state"
+        )
+    if age < -300:
+        raise InvalidFeedError(
+            f"Status feed lastUpdate is in the future (lastUpdate={reference.isoformat()}, ahead={ceil(-age)}s). "
+            "Preserving remote state"
+        )
     latest_allowed = reference + timedelta(seconds=300)
     if scan is not None:
         if scan.latest_state_at is not None and scan.latest_state_at > latest_allowed:

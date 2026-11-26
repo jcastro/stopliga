@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.33 — 2026-11-26
+
+- Report stale and future feed timestamps separately. Include the feed timestamp and its age or clock offset, and show the configured age limit when the feed is stale.
+- In loop mode, warn at the first stale check and at most once per hour until a sync succeeds. Intermittent network failures are reported immediately and preserve the stale-warning interval.
+
 ## 0.1.32 — 2026-11-20
 
 - Retry incomplete HTTP downloads while keeping router writes with unknown outcomes pending for reconciliation.

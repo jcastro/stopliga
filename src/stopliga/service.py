@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from threading import Event
+from time import monotonic
 from uuid import uuid4
 
 from .errors import (
@@ -11,6 +12,7 @@ from .errors import (
     ConfigError,
     PartialUpdateError,
     ReconciliationRequiredError,
+    StaleFeedError,
     StateError,
     StopLigaError,
     UnsupportedRouteShapeError,
@@ -32,6 +34,7 @@ FATAL_LOOP_ERRORS = (
     StateError,
     UnsupportedRouteShapeError,
 )
+STALE_FEED_LOG_INTERVAL_SECONDS = 3600
 
 
 class StopLigaService:
@@ -517,13 +520,21 @@ class StopLigaService:
             send_startup_notification(self.config)
         except StopLigaError as exc:
             log_event(self.logger, logging.WARNING, "notification_failed", error=exc)
+        last_stale_warning_at: float | None = None
         while not stop_event.is_set():
             try:
                 self.run_once()
             except FATAL_LOOP_ERRORS:
                 raise
+            except StaleFeedError as exc:
+                now = monotonic()
+                if last_stale_warning_at is None or now - last_stale_warning_at >= STALE_FEED_LOG_INTERVAL_SECONDS:
+                    log_event(self.logger, logging.WARNING, "loop_iteration_failed", error=exc)
+                    last_stale_warning_at = now
             except StopLigaError as exc:
                 log_event(self.logger, logging.ERROR, "loop_iteration_failed", error=exc)
+            else:
+                last_stale_warning_at = None
             if stop_event.wait(self.schedule.wait_seconds(self.config.interval_seconds)):
                 break
         log_event(self.logger, logging.INFO, "loop_stop")

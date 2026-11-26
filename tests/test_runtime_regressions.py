@@ -5,6 +5,7 @@ from http.client import IncompleteRead
 import gzip
 import io
 import json
+import logging
 import urllib.error
 from unittest.mock import MagicMock, Mock, patch
 
@@ -21,6 +22,7 @@ from stopliga.errors import (
     PartialUpdateError,
     ReconciliationRequiredError,
     RemoteRequestError,
+    StaleFeedError,
     StateError,
     UnsupportedRouteShapeError,
 )
@@ -56,10 +58,52 @@ def config_in(tmp_path, **kwargs):
     return Config(state_file=tmp_path / "state.json", bootstrap_guard_file=tmp_path / "guard.json", **kwargs)
 
 
-@pytest.mark.parametrize("stamp", ["2026-01-01T12:00:00Z", "2026-04-23T10:30:00Z", "bad", None])
-def test_stale_future_and_missing_feed_dates_are_rejected(stamp):
-    with pytest.raises(InvalidFeedError):
+@pytest.mark.parametrize(
+    ("stamp", "error_class", "message"),
+    [
+        (
+            "2026-01-01T12:00:00Z",
+            StaleFeedError,
+            r"is stale .*lastUpdate=2026-01-01T12:00:00\+00:00, age=\d+s, limit=3600s",
+        ),
+        ("2026-04-23T10:30:00Z", InvalidFeedError, r"is in the future .*ahead=3600s"),
+        ("2026-04-23T08:29:59.900000Z", StaleFeedError, r"is stale .*age=3601s, limit=3600s"),
+        ("2026-04-23T09:35:00.100000Z", InvalidFeedError, r"is in the future .*ahead=301s"),
+        ("bad", InvalidFeedError, "requires a valid lastUpdate"),
+        (None, InvalidFeedError, "requires a valid lastUpdate"),
+    ],
+)
+def test_stale_future_and_missing_feed_dates_are_rejected(stamp, error_class, message):
+    with pytest.raises(error_class, match=message) as caught:
         validate_feed_freshness({"lastUpdate": stamp, "data": []}, 3600)
+    assert type(caught.value) is error_class
+
+
+def test_loop_throttles_stale_feed_warnings_across_network_errors(tmp_path, caplog):
+    service = StopLigaService(config_in(tmp_path, run_mode="loop"))
+    stop_event = Mock()
+    stop_event.is_set.return_value = False
+    stop_event.wait.side_effect = [False] * 6 + [True]
+    stale = [StaleFeedError(f"stale attempt {number}") for number in range(5)]
+    network_error = NetworkError("fetch failed")
+
+    with (
+        patch.object(
+            service, "run_once", side_effect=[stale[0], stale[1], stale[2], None, stale[3], network_error, stale[4]]
+        ) as run_once,
+        patch("stopliga.service.monotonic", side_effect=[0.0, 300.0, 3600.0, 3900.0, 4500.0]),
+    ):
+        assert service.run_loop(stop_event) == 0
+
+    assert run_once.call_count == 7
+    assert [
+        (record.levelno, record.fields["error"]) for record in caplog.records if record.msg == "loop_iteration_failed"
+    ] == [
+        (logging.WARNING, stale[0]),
+        (logging.WARNING, stale[2]),
+        (logging.WARNING, stale[3]),
+        (logging.ERROR, network_error),
+    ]
 
 
 def test_history_compaction_retains_latest_timestamp_even_if_unsorted():

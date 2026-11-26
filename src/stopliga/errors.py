@@ -37,6 +37,10 @@ class InvalidFeedError(StopLigaError):
     """Raised when the GitHub feed is malformed or unsafe to apply."""
 
 
+class StaleFeedError(InvalidFeedError):
+    """Raised when the feed's timestamp exceeds the configured age limit."""
+
+
 class RouteNotFoundError(StopLigaError):
     """Raised when the target route does not exist."""
 
